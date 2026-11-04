@@ -137,6 +137,53 @@ export async function GET(req: NextRequest) {
         } catch (ytErr: any) {
           console.error("Ytdl resolution error for", ytId, ytErr.message);
         }
+
+        // Resilient fallback for serverless cloud IPs (Vercel / AWS)
+        if (!resolvedUrl) {
+          try {
+            const fallbackEndpoints = [
+              `https://pipedapi.kavin.rocks/streams/${ytId}`,
+              `https://api.piped.private.coffee/streams/${ytId}`,
+              `https://invidious.nerdvpn.de/api/v1/videos/${ytId}`,
+            ];
+            for (const ep of fallbackEndpoints) {
+              const fRes = await fetch(ep, {
+                headers: { "User-Agent": "Mozilla/5.0" },
+                signal: AbortSignal.timeout(3000),
+              });
+              if (!fRes.ok) continue;
+              const fData = await fRes.json();
+              if (fData.audioStreams && Array.isArray(fData.audioStreams)) {
+                const best = fData.audioStreams.sort(
+                  (a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0)
+                )[0];
+                if (best?.url) {
+                  resolvedUrl = best.url;
+                  ytStreamCache.set(ytId, {
+                    url: best.url,
+                    expires: Date.now() + 3 * 3600 * 1000,
+                  });
+                  break;
+                }
+              }
+              if (fData.adaptiveFormats && Array.isArray(fData.adaptiveFormats)) {
+                const aud = fData.adaptiveFormats.find((f: any) =>
+                  f.type?.includes("audio")
+                );
+                if (aud?.url) {
+                  resolvedUrl = aud.url;
+                  ytStreamCache.set(ytId, {
+                    url: aud.url,
+                    expires: Date.now() + 3 * 3600 * 1000,
+                  });
+                  break;
+                }
+              }
+            }
+          } catch {
+            // fallback error ignored
+          }
+        }
       }
 
       if (!resolvedUrl) {
