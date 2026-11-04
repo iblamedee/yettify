@@ -6,6 +6,7 @@ import { MediaCard } from "@/components/media/MediaCard";
 import { formatNumberWithCommas } from "@/lib/utils";
 import { ensureArtistInDb } from "@/lib/musicEngine";
 
+export const dynamic = "force-dynamic";
 export const revalidate = 60;
 
 export default async function ArtistPage({ params }: { params: { id: string } }) {

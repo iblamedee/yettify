@@ -23,6 +23,10 @@ function createPrismaClient(): PrismaClient {
     });
   }
 
+  if (!process.env.DATABASE_URL) {
+    process.env.DATABASE_URL = "file:./dev.db";
+  }
+
   return new PrismaClient({
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
   });

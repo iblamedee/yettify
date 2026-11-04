@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getRecommendationsForTrack, getRecommendationsForArtist } from "@/lib/recommendationEngine";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
