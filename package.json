@@ -1,0 +1,45 @@
+{
+  "name": "spotify-web-reconstruction",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push",
+    "prisma:seed": "node prisma/seed.js",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@distube/ytdl-core": "^5.0.1",
+    "@libsql/client": "^0.8.0",
+    "@prisma/adapter-libsql": "^5.22.0",
+    "@prisma/client": "^5.21.1",
+    "@types/crypto-js": "^4.2.2",
+    "bcryptjs": "^2.4.3",
+    "cheerio": "^1.2.0",
+    "clsx": "^2.1.1",
+    "crypto-js": "^4.2.0",
+    "lucide-react": "^0.453.0",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.4",
+    "yt-search": "^2.13.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.17.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/yt-search": "^2.10.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "prisma": "^5.21.1",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3"
+  }
+}
