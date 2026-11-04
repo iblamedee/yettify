@@ -5,7 +5,7 @@ colorFrom: green
 colorTo: indigo
 sdk: static
 app_build_command: npm run build
-app_file: dist/index.html
+app_file: out/index.html
 pinned: false
 ---
 
