@@ -3,7 +3,7 @@ import { generateRadioStation } from "@/lib/recommendationEngine";
 import { MediaHeader } from "@/components/media/MediaHeader";
 import { TrackTable } from "@/components/track/TrackTable";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export default async function RadioPage({
   params,

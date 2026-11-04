@@ -55,6 +55,8 @@ export interface Track {
   duration: number; // in seconds
   streamCount: number;
   audioUrl: string;
+  ytId?: string | null;
+  source?: string | null;
   lyrics?: string | null;
   explicit: boolean;
   trackNumber: number;

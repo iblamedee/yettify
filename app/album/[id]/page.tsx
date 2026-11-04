@@ -6,7 +6,6 @@ import { MediaCard } from "@/components/media/MediaCard";
 import { ensureAlbumInDb } from "@/lib/musicEngine";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 60;
 
 export default async function AlbumPage({ params }: { params: { id: string } }) {
   let album = await prisma.album.findUnique({

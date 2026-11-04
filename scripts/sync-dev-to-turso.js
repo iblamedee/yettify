@@ -59,78 +59,91 @@ async function main() {
 
   console.log("Connecting to Turso:", tursoUrl);
 
+  async function batchWithRetry(statements, retries = 3) {
+    if (!statements.length) return;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        return await tursoClient.batch(statements, "write");
+      } catch (err) {
+        if (attempt === retries) throw err;
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+      }
+    }
+  }
+
   // Disable foreign keys temporarily during data replacement
   await tursoClient.execute("PRAGMA foreign_keys = OFF;");
 
   console.log("Clearing outdated rows in Turso...");
-  await tursoClient.execute("DELETE FROM PlaylistTrack;");
-  await tursoClient.execute("DELETE FROM Track;");
-  await tursoClient.execute("DELETE FROM Album;");
-  await tursoClient.execute("DELETE FROM Artist;");
-  await tursoClient.execute("DELETE FROM Genre;");
-  await tursoClient.execute("DELETE FROM Playlist;");
-  await tursoClient.execute("DELETE FROM User;");
+  await batchWithRetry([
+    "DELETE FROM PlaylistTrack;",
+    "DELETE FROM Track;",
+    "DELETE FROM Album;",
+    "DELETE FROM Artist;",
+    "DELETE FROM Genre;",
+    "DELETE FROM Playlist;",
+    "DELETE FROM User;",
+  ]);
 
-  console.log("Inserting clean synced data from dev.db...");
+  console.log("Inserting clean synced data from dev.db in batches...");
 
   // 1. Genres
-  for (const g of genres) {
-    await tursoClient.execute({
-      sql: `INSERT INTO Genre (id, name, slug, colorHex, imageUrl) VALUES (?, ?, ?, ?, ?)`,
-      args: [g.id, g.name, g.slug, g.colorHex, g.imageUrl],
-    });
-  }
+  const genreStmts = genres.map((g) => ({
+    sql: `INSERT INTO Genre (id, name, slug, colorHex, imageUrl) VALUES (?, ?, ?, ?, ?)`,
+    args: [g.id, g.name, g.slug, g.colorHex, g.imageUrl],
+  }));
+  await batchWithRetry(genreStmts);
   console.log("✓ Genres synced:", genres.length);
 
   // 2. Artists
-  for (const a of artists) {
-    await tursoClient.execute({
-      sql: `INSERT INTO Artist (id, name, avatarUrl, headerUrl, bio, verified, monthlyListeners, rankGlobal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [a.id, a.name, a.avatarUrl, a.headerUrl, a.bio, a.verified ? 1 : 0, a.monthlyListeners, a.rankGlobal],
-    });
-  }
+  const artistStmts = artists.map((a) => ({
+    sql: `INSERT INTO Artist (id, name, avatarUrl, headerUrl, bio, verified, monthlyListeners, rankGlobal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [a.id, a.name, a.avatarUrl, a.headerUrl, a.bio, a.verified ? 1 : 0, a.monthlyListeners, a.rankGlobal],
+  }));
+  await batchWithRetry(artistStmts);
   console.log("✓ Artists synced:", artists.length);
 
   // 3. Albums
-  for (const al of albums) {
-    await tursoClient.execute({
-      sql: `INSERT INTO Album (id, title, coverUrl, releaseYear, releaseDate, type, copyright, artistId, genreId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [al.id, al.title, al.coverUrl, al.releaseYear, al.releaseDate, al.type, al.copyright, al.artistId, al.genreId],
-    });
-  }
+  const albumStmts = albums.map((al) => ({
+    sql: `INSERT INTO Album (id, title, coverUrl, releaseYear, releaseDate, type, copyright, artistId, genreId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [al.id, al.title, al.coverUrl, al.releaseYear, al.releaseDate, al.type, al.copyright, al.artistId, al.genreId],
+  }));
+  await batchWithRetry(albumStmts);
   console.log("✓ Albums synced:", albums.length);
 
-  // 4. Tracks
-  for (const t of tracks) {
-    await tursoClient.execute({
+  // 4. Tracks in chunks of 25
+  for (let i = 0; i < tracks.length; i += 25) {
+    const chunk = tracks.slice(i, i + 25);
+    const trackStmts = chunk.map((t) => ({
       sql: `INSERT INTO Track (id, title, duration, streamCount, audioUrl, lyrics, explicit, trackNumber, discNumber, albumId, artistId, genreId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [t.id, t.title, t.duration, t.streamCount, t.audioUrl, t.lyrics, t.explicit ? 1 : 0, t.trackNumber, t.discNumber, t.albumId, t.artistId, t.genreId],
-    });
+    }));
+    await batchWithRetry(trackStmts);
   }
   console.log("✓ Tracks synced:", tracks.length);
 
   // 5. Users
-  for (const u of users) {
-    await tursoClient.execute({
-      sql: `INSERT INTO User (id, email, passwordHash, displayName, avatarUrl, role, plan, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        u.id,
-        u.email,
-        u.passwordHash,
-        u.displayName,
-        u.avatarUrl,
-        u.role,
-        u.plan,
-        u.createdAt ? u.createdAt.toISOString() : new Date().toISOString(),
-        u.updatedAt ? u.updatedAt.toISOString() : new Date().toISOString(),
-      ],
-    });
-  }
+  const userStmts = users.map((u) => ({
+    sql: `INSERT INTO User (id, email, passwordHash, displayName, avatarUrl, role, plan, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      u.id,
+      u.email,
+      u.passwordHash,
+      u.displayName,
+      u.avatarUrl,
+      u.role,
+      u.plan,
+      u.createdAt ? u.createdAt.toISOString() : new Date().toISOString(),
+      u.updatedAt ? u.updatedAt.toISOString() : new Date().toISOString(),
+    ],
+  }));
+  await batchWithRetry(userStmts);
   console.log("✓ Users synced:", users.length);
 
-  // 6. Playlists
-  for (const p of playlists) {
-    await tursoClient.execute({
+  // 6. Playlists in chunks of 15
+  for (let i = 0; i < playlists.length; i += 15) {
+    const chunk = playlists.slice(i, i + 15);
+    const playlistStmts = chunk.map((p) => ({
       sql: `INSERT INTO Playlist (id, title, description, coverUrl, isPublic, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         p.id,
@@ -142,30 +155,27 @@ async function main() {
         p.createdAt ? p.createdAt.toISOString() : new Date().toISOString(),
         p.updatedAt ? p.updatedAt.toISOString() : new Date().toISOString(),
       ],
-    });
+    }));
+    await batchWithRetry(playlistStmts);
   }
   console.log("✓ Playlists synced:", playlists.length);
 
-  // 7. PlaylistTracks
-  let ptCount = 0;
-  for (const pt of playlistTracks) {
-    try {
-      await tursoClient.execute({
-        sql: `INSERT INTO PlaylistTrack (id, playlistId, trackId, addedAt, position) VALUES (?, ?, ?, ?, ?)`,
-        args: [
-          pt.id,
-          pt.playlistId,
-          pt.trackId,
-          pt.addedAt ? pt.addedAt.toISOString() : new Date().toISOString(),
-          pt.position ?? 0,
-        ],
-      });
-      ptCount++;
-    } catch {
-      // Ignore duplicates
-    }
+  // 7. PlaylistTracks in chunks of 20
+  for (let i = 0; i < playlistTracks.length; i += 20) {
+    const chunk = playlistTracks.slice(i, i + 20);
+    const ptStmts = chunk.map((pt) => ({
+      sql: `INSERT OR IGNORE INTO PlaylistTrack (id, playlistId, trackId, addedAt, position) VALUES (?, ?, ?, ?, ?)`,
+      args: [
+        pt.id,
+        pt.playlistId,
+        pt.trackId,
+        pt.addedAt ? pt.addedAt.toISOString() : new Date().toISOString(),
+        pt.position ?? 0,
+      ],
+    }));
+    await batchWithRetry(ptStmts);
   }
-  console.log("✓ PlaylistTracks synced:", ptCount);
+  console.log("✓ PlaylistTracks synced:", playlistTracks.length);
 
   // Re-enable foreign keys
   await tursoClient.execute("PRAGMA foreign_keys = ON;");

@@ -96,17 +96,27 @@ export function cleanText(str?: string | null): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
-const FORBIDDEN_COVER_ARTISTS = [
-  "geek music",
-  "born to rock",
-  "luke muzzic",
+const FORBIDDEN_COVER_KEYWORDS = [
+  "cover",
   "karaoke",
   "tribute",
+  "instrumental",
+  "piano",
+  "acoustic",
+  "mashup",
+  "parody",
+  "slowed",
+  "reverb",
+  "made famous by",
+  "originally performed by",
+  "in the style of",
   "hit crew",
+  "geek music",
+  "born to rock",
   "midifine",
   "cover band",
-  "piano dreamers",
-  "instrumental pop songs",
+  "lullaby",
+  "remake",
 ];
 
 // In-memory cache for resolved track audio streams to provide 0ms latency for repeated requests
@@ -131,7 +141,7 @@ export async function checkJioSaavnVerified(
   const normArtist = cleanText(artistName);
 
   try {
-    const searchUrl = `https://www.jiosaavn.com/api.php?__call=search.getResults&_marker=0&api_version=4&_format=json&p=1&n=6&q=${encodeURIComponent(query)}`;
+    const searchUrl = `https://www.jiosaavn.com/api.php?__call=search.getResults&_marker=0&api_version=4&_format=json&p=1&n=8&q=${encodeURIComponent(query)}`;
     const res = await fetch(searchUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -144,23 +154,29 @@ export async function checkJioSaavnVerified(
 
     for (const song of results) {
       const sTitle = song.title || song.song || "";
+      const sAlbum = song.album || song.more_info?.album || "";
+      const primaryArtistObjs = song.more_info?.artistMap?.primary_artists || [];
+      const primaryArtistNames = Array.isArray(primaryArtistObjs) ? primaryArtistObjs.map((a: any) => a.name) : [];
+
       const artistList = [
+        ...primaryArtistNames,
         song.primary_artists,
         song.singers,
         song.more_info?.music,
         ...(song.more_info?.artistMap?.artists?.map((a: any) => a.name) || []),
-        ...(song.more_info?.artistMap?.primary_artists?.map((a: any) => a.name) || []),
       ].filter(Boolean);
       const sArtists = artistList.join(" ");
 
       const sNormTitle = cleanText(sTitle);
       const sNormArtists = cleanText(sArtists);
 
-      // 1. Forbidden cover artists check
-      const isCoverArtist = FORBIDDEN_COVER_ARTISTS.some((f) =>
-        sArtists.toLowerCase().includes(f)
+      // 1. Forbidden covers, karaoke, and tribute check
+      const fullContent = `${sTitle} ${sAlbum} ${sArtists}`.toLowerCase();
+      const hasCoverKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) => fullContent.includes(kw));
+      const requestedHasKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) =>
+        `${title} ${artistName || ""}`.toLowerCase().includes(kw)
       );
-      if (isCoverArtist && !normArtist.includes("cover") && !normArtist.includes("karaoke")) {
+      if (hasCoverKeyword && !requestedHasKeyword) {
         continue;
       }
 
@@ -173,30 +189,31 @@ export async function checkJioSaavnVerified(
       }
       if (!titleMatches) continue;
 
-      // 3. Length ratio check (reject mashups like "After Dark x Sweater Weather" when user asked for "After Dark")
+      // 3. Length ratio check (reject mashups and combined songs)
       const lengthRatio = sNormTitle.length / Math.max(1, normTitle.length);
       if (lengthRatio > 1.35 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
         continue;
       }
 
-      // 4. Artist matching
+      // 4. Strict Artist Matching: Ensure the primary artist strictly matches
       if (normArtist) {
-        const artistTokens = normArtist.match(/[a-z0-9]{3,}/g) || [normArtist];
-        const artistMatches = artistTokens.some((tok) => sNormArtists.includes(tok));
-        if (!artistMatches) {
-          continue;
-        }
-      } else if (normTitle.length > sNormTitle.length) {
-        const remainingQuery = normTitle.replace(sNormTitle, "");
-        if (remainingQuery.length >= 3 && !sNormArtists.includes(remainingQuery)) {
-          continue;
+        const primaryNorms = primaryArtistNames.map((n: string) => cleanText(n));
+        const matchedPrimary = primaryNorms.some(
+          (pn: string) => pn.includes(normArtist) || normArtist.includes(pn)
+        );
+        const matchedAny =
+          normArtist.length >= 4 &&
+          (sNormArtists.includes(normArtist) || normArtist.includes(sNormArtists));
+
+        if (!matchedPrimary && !matchedAny) {
+          continue; // REJECT if artist does not match
         }
       }
 
-      // 5. Duration proximity
+      // 5. Duration proximity check
       const sDuration = parseInt(song.duration || song.more_info?.duration || "0", 10);
       if (targetDuration && targetDuration > 0 && sDuration > 0) {
-        if (Math.abs(sDuration - targetDuration) > 50) {
+        if (Math.abs(sDuration - targetDuration) > 40) {
           continue;
         }
       }
@@ -614,6 +631,13 @@ export async function searchJioSaavn(query: string, limit = 10): Promise<GlobalT
       const artistName = artistNames.length > 0 ? artistNames.join(", ") : "Various Artists";
 
       const albumTitle = decodeHtml(s.album || s.more_info?.album || title);
+
+      // Filter out unwanted covers, karaoke, and tribute versions
+      const fullSearchContent = `${title} ${albumTitle} ${artistName}`.toLowerCase();
+      const hasCover = FORBIDDEN_COVER_KEYWORDS.some((kw) => fullSearchContent.includes(kw));
+      const qHasCover = FORBIDDEN_COVER_KEYWORDS.some((kw) => query.toLowerCase().includes(kw));
+      if (hasCover && !qHasCover) continue;
+
       const rawImg = s.image || "";
       const coverUrl = rawImg ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg") : "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&h=300&fit=crop";
       const duration = parseInt(s.duration || s.more_info?.duration || "180", 10);

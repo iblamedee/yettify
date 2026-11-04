@@ -4,36 +4,49 @@ import { getGreeting } from "@/lib/utils";
 import { Heart, Play } from "lucide-react";
 import Link from "next/link";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   const greeting = getGreeting();
 
-  // Fetch home sections data
-  const [artists, albums, playlists, trendingTracks] = await Promise.all([
-    prisma.artist.findMany({
-      take: 6,
-      orderBy: { monthlyListeners: "desc" },
-    }),
-    prisma.album.findMany({
-      take: 6,
-      include: { artist: true, tracks: true },
-      orderBy: { releaseYear: "desc" },
-    }),
-    prisma.playlist.findMany({
-      where: { isPublic: true },
-      take: 6,
-      include: {
-        owner: { select: { displayName: true } },
-        tracks: { include: { track: { include: { artist: true, album: true } } } },
-      },
-    }),
-    prisma.track.findMany({
-      take: 6,
-      include: { artist: true, album: true },
-      orderBy: { streamCount: "desc" },
-    }),
-  ]);
+  // Fetch home sections data with fallback
+  let artists: any[] = [];
+  let albums: any[] = [];
+  let playlists: any[] = [];
+  let trendingTracks: any[] = [];
+
+  try {
+    const res = await Promise.all([
+      prisma.artist.findMany({
+        take: 6,
+        orderBy: { monthlyListeners: "desc" },
+      }),
+      prisma.album.findMany({
+        take: 6,
+        include: { artist: true, tracks: true },
+        orderBy: { releaseYear: "desc" },
+      }),
+      prisma.playlist.findMany({
+        where: { isPublic: true },
+        take: 6,
+        include: {
+          owner: { select: { displayName: true } },
+          tracks: { include: { track: { include: { artist: true, album: true } } } },
+        },
+      }),
+      prisma.track.findMany({
+        take: 6,
+        include: { artist: true, album: true },
+        orderBy: { streamCount: "desc" },
+      }),
+    ]);
+    artists = res[0];
+    albums = res[1];
+    playlists = res[2];
+    trendingTracks = res[3];
+  } catch (err) {
+    console.error("HomePage data load error:", err);
+  }
 
   return (
     <div className="space-y-8 pb-16">
@@ -304,7 +317,7 @@ export default async function HomePage() {
               imageUrl={pl.coverUrl}
               tracks={pl.tracks.map((pt: any) => pt.track)}
               targetUrl={`/playlist/${pl.id}`}
-              playContext={pl.tracks.map((pt) => pt.track)}
+              playContext={pl.tracks.map((pt: any) => pt.track)}
             />
           ))}
         </div>

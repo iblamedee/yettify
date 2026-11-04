@@ -98,7 +98,12 @@ export async function GET(req: NextRequest) {
       if (resolved?.audioUrl) {
         if (resolved.source === "jiosaavn" && resolved.audioUrl.startsWith("http")) {
           if (isJsonRequested) {
-            return NextResponse.json({ success: true, audioUrl: resolved.audioUrl });
+            return NextResponse.json({
+              success: true,
+              audioUrl: resolved.audioUrl,
+              source: "jiosaavn",
+              duration: resolved.duration,
+            });
           }
           return NextResponse.redirect(resolved.audioUrl, 302);
         }
@@ -108,6 +113,16 @@ export async function GET(req: NextRequest) {
         } else if (resolved.audioUrl.includes("ytId=")) {
           const m = resolved.audioUrl.match(/ytId=([a-zA-Z0-9_-]+)/);
           if (m) ytId = m[1];
+        }
+
+        if (isJsonRequested && ytId) {
+          return NextResponse.json({
+            success: true,
+            ytId,
+            audioUrl: resolved.audioUrl,
+            source: "youtube",
+            duration: resolved.duration,
+          });
         }
       }
     }
@@ -187,6 +202,9 @@ export async function GET(req: NextRequest) {
       }
 
       if (!resolvedUrl) {
+        if (isJsonRequested) {
+          return NextResponse.json({ success: true, ytId, source: "youtube" });
+        }
         return NextResponse.json(
           { error: "Failed to resolve YouTube audio stream" },
           { status: 404 }
@@ -194,7 +212,7 @@ export async function GET(req: NextRequest) {
       }
 
       if (isJsonRequested) {
-        return NextResponse.json({ success: true, audioUrl: resolvedUrl });
+        return NextResponse.json({ success: true, audioUrl: resolvedUrl, ytId, source: "youtube" });
       }
 
       if (redirect) {
