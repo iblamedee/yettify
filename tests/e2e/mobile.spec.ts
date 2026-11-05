@@ -66,4 +66,27 @@ test.describe("Mobile Responsive View & Interactions", () => {
       }
     }
   });
+
+  test("TC-MOB-04: PWA Manifest, Service Worker, and Background MediaSession are configured", async ({ page, request }) => {
+    // 1. Verify manifest.json is served with standalone display and audio categories
+    const manifestRes = await request.get("/manifest.json");
+    expect(manifestRes.status()).toBe(200);
+    const manifest = await manifestRes.json();
+    expect(manifest.display).toBe("standalone");
+    expect(manifest.name).toContain("Spotify");
+    expect(manifest.categories).toContain("music");
+
+    // 2. Verify Service Worker is accessible
+    const swRes = await request.get("/sw.js");
+    expect(swRes.status()).toBe(200);
+    const swText = await swRes.text();
+    expect(swText).toContain("spotify-web-player");
+
+    // 3. Verify MediaSession API support and playsInline audio tag in DOM
+    await page.goto("/");
+    const audioElement = page.locator("audio");
+    await expect(audioElement).toHaveCount(1);
+    await expect(audioElement).toHaveAttribute("playsinline", "");
+  });
 });
+

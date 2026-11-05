@@ -134,7 +134,8 @@ const ytQueryCache = new Map<string, any>();
 export async function checkJioSaavnVerified(
   title: string,
   artistName?: string,
-  targetDuration?: number
+  targetDuration?: number,
+  bitrate: "96" | "160" | "320" = "320"
 ): Promise<{ audioUrl: string; duration?: number; lyrics?: string; coverUrl?: string; source: string } | null> {
   const query = [title, artistName].filter(Boolean).join(" ");
   const normTitle = cleanText(title);
@@ -219,7 +220,7 @@ export async function checkJioSaavnVerified(
       }
 
       const encUrl = song.encrypted_media_url || song.more_info?.encrypted_media_url;
-      const audioUrl = decryptSaavnUrl(encUrl, "320");
+      const audioUrl = decryptSaavnUrl(encUrl, bitrate);
       if (audioUrl) {
         const rawImg = song.image || "";
         const coverUrl = rawImg ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg") : undefined;
@@ -362,14 +363,14 @@ export async function resolveAudioForTrack(
 ): Promise<{ audioUrl: string; duration?: number; lyrics?: string; coverUrl?: string; source?: string; ytId?: string } | null> {
   const normTitle = cleanText(title);
   const normArtist = cleanText(artistName);
-  const cacheKey = `${normTitle}:::${normArtist}`;
+  const cacheKey = `${normTitle}:::${normArtist}:::${bitrate}`;
 
   if (streamResolutionCache.has(cacheKey)) {
     return streamResolutionCache.get(cacheKey)!;
   }
 
-  // 1. Try verified JioSaavn 320kbps stream
-  const saavnRes = await checkJioSaavnVerified(title, artistName, targetDuration);
+  // 1. Try verified JioSaavn stream with requested bitrate
+  const saavnRes = await checkJioSaavnVerified(title, artistName, targetDuration, bitrate);
   if (saavnRes) {
     streamResolutionCache.set(cacheKey, saavnRes);
     return saavnRes;

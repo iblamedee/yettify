@@ -68,6 +68,7 @@ export default function MobileLibraryPage() {
         {showPlaylists && (
           <Link
             href="/collection/tracks"
+            data-testid="mobile-liked-songs-link"
             className="flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 active:bg-white/10 transition-colors"
           >
             <div className="w-14 h-14 rounded-md bg-gradient-purple flex items-center justify-center shrink-0 shadow-md">
@@ -76,7 +77,7 @@ export default function MobileLibraryPage() {
             <div className="flex flex-col overflow-hidden">
               <span className="font-bold text-sm text-white truncate">Liked Songs</span>
               <span className="text-xs text-[#b3b3b3]">
-                Playlist • {likedTrackIds.size} {likedTrackIds.size === 1 ? "song" : "songs"}
+                📌 Playlist • {likedTrackIds.size} {likedTrackIds.size === 1 ? "song" : "songs"}
               </span>
             </div>
           </Link>

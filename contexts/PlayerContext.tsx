@@ -2,6 +2,8 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Track } from "@/types";
+import { QualityTier, resolveStreamQuality } from "@/lib/audioQuality";
+import { useLibrary } from "@/contexts/LibraryContext";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -18,6 +20,7 @@ export interface PlayerContextType {
   isMuted: boolean;
   isShuffle: boolean;
   repeatMode: RepeatMode;
+  playbackQuality: QualityTier;
   userQueue: Track[];
   contextQueue: Track[];
   history: Track[];
@@ -55,6 +58,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [userQueue, setUserQueue] = useState<Track[]>([]);
   const [contextQueue, setContextQueue] = useState<Track[]>([]);
   const [history, setHistory] = useState<Track[]>([]);
+  const [playbackQuality, setPlaybackQuality] = useState<QualityTier>("ULTRA HD");
+  const [audioQualityPref, setAudioQualityPref] = useState<string>("HIGH");
+
+  let toggleLikeTrack: ((track: Track) => Promise<boolean>) | undefined;
+  try {
+    const library = useLibrary();
+    toggleLikeTrack = library.toggleLikeTrack;
+  } catch {
+    // Fallback if rendered outside LibraryProvider in isolated unit tests
+  }
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const prefetchedTrackIdRef = useRef<string | null>(null);
@@ -62,12 +75,46 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const ytPlayerReadyRef = useRef<boolean>(false);
   const activeSourceRef = useRef<"audio" | "youtube">("audio");
   const isPlayingRef = useRef<boolean>(isPlaying);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const retryCountRef = useRef<number>(0);
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastPositionStateUpdateRef = useRef<number>(0);
 
   const onEndedRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
+
+  // Mobile Web Audio Keep-Alive: Keeps the browser audio hardware session active across track transitions
+  const ensureAudioKeepAlive = useCallback(() => {
+    try {
+      if (typeof window === "undefined") return;
+      if (!audioContextRef.current) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          // 1-second silent looping buffer
+          const buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+          source.loop = true;
+          const gain = ctx.createGain();
+          gain.gain.value = 0.001; // inaudible
+          source.connect(gain);
+          gain.connect(ctx.destination);
+          source.start(0);
+          audioContextRef.current = ctx;
+        }
+      }
+      if (audioContextRef.current && audioContextRef.current.state === "suspended") {
+        audioContextRef.current.resume().catch(() => {});
+      }
+    } catch {
+      // AudioContext init fallback
+    }
+  }, []);
+
 
   // Initialize official YouTube Iframe Player in background
   useEffect(() => {
@@ -162,6 +209,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
       const savedShuffle = localStorage.getItem("spotify_shuffle") === "true";
       setIsShuffle(savedShuffle);
+
+      const savedQuality = localStorage.getItem("spotify_audio_quality");
+      if (savedQuality) {
+        setAudioQualityPref(savedQuality);
+      }
+      fetch("/api/me/preferences")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.preferences?.audioQuality) {
+            setAudioQualityPref(data.preferences.audioQuality);
+            try {
+              localStorage.setItem("spotify_audio_quality", data.preferences.audioQuality);
+            } catch {}
+          }
+        })
+        .catch(() => {});
     } catch {
       // ignore
     }
@@ -179,35 +242,151 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [volume, isMuted]);
 
-  // Handle MediaSession metadata & action handlers
+  // Mobile Seamless Handoff: Switch from YouTube Iframe to native HTML5 Audio when tab/browser is backgrounded
   useEffect(() => {
-    if ("mediaSession" in navigator && currentTrack) {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        // Mobile browser tab / screen minimized or switched
+        if (activeSourceRef.current === "youtube" && isPlayingRef.current && currentTrack) {
+          try {
+            const ytId =
+              currentTrack.ytId ||
+              currentTrack.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
+            if (ytId && ytPlayerRef.current?.getCurrentTime) {
+              const currentSeek = ytPlayerRef.current.getCurrentTime() || currentTime;
+              try {
+                ytPlayerRef.current.pauseVideo?.();
+              } catch {}
+
+              const streamAudioUrl = `/api/stream?ytId=${encodeURIComponent(ytId)}&redirect=true`;
+              activeSourceRef.current = "audio";
+              if (audioRef.current) {
+                audioRef.current.src = streamAudioUrl;
+                audioRef.current.currentTime = currentSeek;
+                audioRef.current
+                  .play()
+                  .then(() => setIsPlaying(true))
+                  .catch(() => {});
+              }
+            }
+          } catch (e) {
+            console.warn("Seamless background handoff error:", e);
+          }
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handleVisibilityChange);
+    };
+  }, [currentTrack, currentTime]);
+
+  // Sync MediaSession playbackState
+  useEffect(() => {
+    if (typeof window !== "undefined" && "mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+    }
+  }, [isPlaying]);
+
+  // Handle MediaSession metadata & action handlers for Mobile Lockscreen / Notification Shade
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+
+    if (currentTrack) {
+      const coverUrl =
+        currentTrack.album?.coverUrl ||
+        "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=512&h=512&fit=crop";
+
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentTrack.title,
         artist: currentTrack.artist?.name || "Unknown Artist",
         album: currentTrack.album?.title || "Unknown Album",
         artwork: [
-          {
-            src: currentTrack.album?.coverUrl || "/placeholder.png",
-            sizes: "512x512",
-            type: "image/jpeg",
-          },
+          { src: coverUrl, sizes: "96x96", type: "image/jpeg" },
+          { src: coverUrl, sizes: "128x128", type: "image/jpeg" },
+          { src: coverUrl, sizes: "192x192", type: "image/jpeg" },
+          { src: coverUrl, sizes: "256x256", type: "image/jpeg" },
+          { src: coverUrl, sizes: "384x384", type: "image/jpeg" },
+          { src: coverUrl, sizes: "512x512", type: "image/jpeg" },
         ],
       });
+    }
 
-      navigator.mediaSession.setActionHandler("play", () => togglePlayPause());
+    try {
+      navigator.mediaSession.setActionHandler("play", () => {
+        ensureAudioKeepAlive();
+        togglePlayPause();
+      });
       navigator.mediaSession.setActionHandler("pause", () => togglePlayPause());
-      navigator.mediaSession.setActionHandler("nexttrack", () => nextTrack());
-      navigator.mediaSession.setActionHandler("previoustrack", () => previousTrack());
+      navigator.mediaSession.setActionHandler("nexttrack", () => {
+        ensureAudioKeepAlive();
+        nextTrack();
+      });
+      navigator.mediaSession.setActionHandler("previoustrack", () => {
+        ensureAudioKeepAlive();
+        previousTrack();
+      });
       navigator.mediaSession.setActionHandler("seekto", (details) => {
         if (details.seekTime !== undefined) {
           seekTo(details.seekTime);
         }
       });
+      navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+        const offset = details.seekOffset || 10;
+        const cur = audioRef.current?.currentTime ?? currentTime ?? 0;
+        seekTo(Math.max(0, cur - offset));
+      });
+      navigator.mediaSession.setActionHandler("seekforward", (details) => {
+        const offset = details.seekOffset || 10;
+        const cur = audioRef.current?.currentTime ?? currentTime ?? 0;
+        const maxDur = duration || 9999;
+        seekTo(Math.min(maxDur, cur + offset));
+      });
+      navigator.mediaSession.setActionHandler("stop", () => {
+        if (audioRef.current) audioRef.current.pause();
+        if (ytPlayerRef.current) {
+          try {
+            ytPlayerRef.current.pauseVideo?.();
+          } catch {}
+        }
+        setIsPlaying(false);
+      });
+    } catch {
+      // Ignore unsupported action handler errors on older mobile engines
     }
-  }, [currentTrack]);
+  }, [currentTrack, duration, currentTime, ensureAudioKeepAlive]);
+
+  // Sync MediaSession positionState for Mobile Lockscreen Scrubber
+  const updateMediaSessionPositionState = useCallback((cur: number, dur: number) => {
+    if (
+      typeof window !== "undefined" &&
+      "mediaSession" in navigator &&
+      "setPositionState" in navigator.mediaSession &&
+      dur > 0 &&
+      !isNaN(cur) &&
+      !isNaN(dur)
+    ) {
+      const now = Date.now();
+      if (now - lastPositionStateUpdateRef.current >= 1000) {
+        lastPositionStateUpdateRef.current = now;
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: Math.max(0, dur),
+            playbackRate: 1,
+            position: Math.max(0, Math.min(dur, cur)),
+          });
+        } catch {}
+      }
+    }
+  }, []);
 
   const playViaDirectAudio = (url: string) => {
+    ensureAudioKeepAlive();
     activeSourceRef.current = "audio";
     try {
       ytPlayerRef.current?.stopVideo?.();
@@ -222,6 +401,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   };
 
   const playViaYouTube = (ytId: string) => {
+    ensureAudioKeepAlive();
+
+    // If browser is already backgrounded or screen locked, mobile OS blocks YouTube iframe.
+    // Seamlessly route straight to native audio stream!
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      playViaDirectAudio(`/api/stream?ytId=${encodeURIComponent(ytId)}&redirect=true`);
+      return;
+    }
+
     activeSourceRef.current = "youtube";
     if (audioRef.current) {
       try {
@@ -250,6 +438,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+
   const playTrack = (track: Track, contextList?: Track[], startIndex?: number) => {
     prefetchedTrackIdRef.current = null;
     setCurrentTrack(track);
@@ -276,6 +465,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }).catch(() => {});
     } catch {}
 
+    // Determine preferred streaming bitrate
+    let prefBitrate: "96" | "160" | "320" = "320";
+    if (audioQualityPref === "LOW") prefBitrate = "96";
+    else if (audioQualityPref === "NORMAL") prefBitrate = "160";
+
     // 1. Direct CDN audio URL (e.g. JioSaavn 320kbps CDN https://aac.saavncdn.com/...)
     if (
       track.audioUrl &&
@@ -283,7 +477,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       !track.audioUrl.includes("/api/stream") &&
       !track.audioUrl.includes("youtube.com")
     ) {
-      playViaDirectAudio(track.audioUrl);
+      let activeUrl = track.audioUrl;
+      if (activeUrl.includes(".saavncdn.com")) {
+        activeUrl = activeUrl.replace(/_(?:96|160|320)\./, `_${prefBitrate}.`);
+      }
+      const qInfo = resolveStreamQuality(activeUrl, "jiosaavn", audioQualityPref);
+      setPlaybackQuality(qInfo.tier);
+      playViaDirectAudio(activeUrl);
       return;
     }
 
@@ -291,19 +491,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const ytMatch = track.ytId || track.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
     if (ytMatch) {
       track.ytId = ytMatch;
+      const qInfo = resolveStreamQuality(track.audioUrl, "youtube", audioQualityPref);
+      setPlaybackQuality(qInfo.tier);
       playViaYouTube(ytMatch);
       return;
     }
 
     // 3. Resolve stream on demand with strict studio matching
     const queryUrl = track.audioUrl?.startsWith("/api/stream")
-      ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json`
-      : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}`;
+      ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json&bitrate=${prefBitrate}`
+      : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`;
 
     fetch(queryUrl)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
+        if (data.qualityTier) {
+          setPlaybackQuality(data.qualityTier);
+        } else {
+          setPlaybackQuality(resolveStreamQuality(data.audioUrl, data.source, audioQualityPref).tier);
+        }
         if (data.source === "jiosaavn" && data.audioUrl && data.audioUrl.startsWith("http")) {
           track.audioUrl = data.audioUrl;
           playViaDirectAudio(data.audioUrl);
@@ -524,23 +731,33 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const cur = audioRef.current.currentTime;
       const dur = audioRef.current.duration || duration || 0;
       setCurrentTime(cur);
+      retryCountRef.current = 0; // Reset network retry counter on healthy progress
+      updateMediaSessionPositionState(cur, dur);
 
       // Predictive Next-Track Prefetching:
-      // When at 80% duration or <= 20s remaining, pre-resolve next track stream URL in the background
-      if (dur > 0 && (cur / dur >= 0.8 || dur - cur <= 20) && currentTrack) {
+      // When at 70% duration or <= 25s remaining, pre-resolve next track stream URL in advance
+      // so track-to-track transition in the background is instantaneous and won't trigger mobile autoplay locks
+      if (dur > 0 && (cur / dur >= 0.7 || dur - cur <= 25) && currentTrack) {
         if (prefetchedTrackIdRef.current !== currentTrack.id) {
           prefetchedTrackIdRef.current = currentTrack.id;
           const next = userQueue[0] || contextQueue[0];
           if (next && (!next.audioUrl || next.audioUrl.startsWith("/api/stream?title="))) {
+            let prefBitrate: "96" | "160" | "320" = "320";
+            if (audioQualityPref === "LOW") prefBitrate = "96";
+            else if (audioQualityPref === "NORMAL") prefBitrate = "160";
+
             const queryUrl = next.audioUrl?.startsWith("/api/stream")
-              ? `${next.audioUrl}&format=json`
-              : `/api/stream?format=json&title=${encodeURIComponent(next.title)}&artist=${encodeURIComponent(next.artist?.name || "")}&duration=${next.duration || 0}`;
+              ? `${next.audioUrl}&format=json&bitrate=${prefBitrate}`
+              : `/api/stream?format=json&title=${encodeURIComponent(next.title)}&artist=${encodeURIComponent(next.artist?.name || "")}&duration=${next.duration || 0}&bitrate=${prefBitrate}`;
 
             fetch(queryUrl)
               .then((res) => (res.ok ? res.json() : null))
               .then((data) => {
                 if (data?.audioUrl) {
                   next.audioUrl = data.audioUrl;
+                } else if (data?.ytId) {
+                  next.ytId = data.ytId;
+                  next.audioUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
                 }
               })
               .catch(() => {});
@@ -552,7 +769,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const onLoadedMetadata = () => {
     if (audioRef.current) {
-      setDuration(audioRef.current.duration || currentTrack?.duration || 0);
+      const dur = audioRef.current.duration || currentTrack?.duration || 0;
+      setDuration(dur);
+      updateMediaSessionPositionState(audioRef.current.currentTime || 0, dur);
     }
   };
 
@@ -568,22 +787,43 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         audioRef.current.play().catch(() => {});
       }
     } else {
+      ensureAudioKeepAlive();
       nextTrack();
     }
   };
   onEndedRef.current = onEnded;
 
+  // Background Network Error Recovery with Exponential Backoff (1s, 2s, 4s)
   const onAudioError = () => {
-    if (currentTrack && audioRef.current) {
-      fetch(`/api/stream?format=json&title=${encodeURIComponent(currentTrack.title)}&artist=${encodeURIComponent(currentTrack.artist?.name || "")}&duration=${currentTrack.duration || 0}`)
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data?.audioUrl && audioRef.current && data.audioUrl !== audioRef.current.src) {
-            audioRef.current.src = data.audioUrl;
-            audioRef.current.play().catch(() => {});
-          }
-        })
-        .catch(() => {});
+    if (!currentTrack || !audioRef.current) return;
+
+    if (retryCountRef.current < 3) {
+      const delay = Math.pow(2, retryCountRef.current) * 1000;
+      retryCountRef.current += 1;
+
+      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = setTimeout(() => {
+        const savedTime = audioRef.current?.currentTime || currentTime || 0;
+        let prefBitrate: "96" | "160" | "320" = "320";
+        if (audioQualityPref === "LOW") prefBitrate = "96";
+        else if (audioQualityPref === "NORMAL") prefBitrate = "160";
+
+        fetch(
+          `/api/stream?format=json&title=${encodeURIComponent(currentTrack.title)}&artist=${encodeURIComponent(currentTrack.artist?.name || "")}&duration=${currentTrack.duration || 0}&bitrate=${prefBitrate}`
+        )
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.audioUrl && audioRef.current) {
+              audioRef.current.src = data.audioUrl;
+              audioRef.current.currentTime = savedTime;
+              audioRef.current
+                .play()
+                .then(() => setIsPlaying(true))
+                .catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }, delay);
     }
   };
 
@@ -647,11 +887,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         e.preventDefault();
         setVolume(Math.max(0, volume - 0.05));
       }
+
+      // Alt + Shift + B (Spotify Desktop) or L (when not typing in an input): Toggle Like on current track
+      if (
+        currentTrack &&
+        toggleLikeTrack &&
+        ((e.altKey && e.shiftKey && (e.key === "b" || e.key === "B")) ||
+          (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "l" || e.key === "L")))
+      ) {
+        e.preventDefault();
+        toggleLikeTrack(currentTrack);
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isPlaying, currentTrack, volume, isMuted, isShuffle, repeatMode, userQueue, contextQueue]);
+  }, [isPlaying, currentTrack, volume, isMuted, isShuffle, repeatMode, userQueue, contextQueue, toggleLikeTrack]);
 
   // Decoupled player value: Does NOT re-create reference on progress ticks (saving hundreds of component re-renders)
   const playerValue = useMemo<PlayerContextType>(
@@ -662,6 +913,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isMuted,
       isShuffle,
       repeatMode,
+      playbackQuality,
       userQueue,
       contextQueue,
       history,
@@ -689,6 +941,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isMuted,
       isShuffle,
       repeatMode,
+      playbackQuality,
       userQueue,
       contextQueue,
       history,
@@ -728,6 +981,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           onEnded={onEnded}
           onError={onAudioError}
           preload="auto"
+          playsInline
         />
         <div
           id="yt-player-container"

@@ -26,7 +26,8 @@ export async function getSessionUser() {
     });
 
     return user;
-  } catch {
+  } catch (err) {
+    console.error("getSessionUser error:", err);
     return null;
   }
 }

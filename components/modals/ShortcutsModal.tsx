@@ -42,6 +42,7 @@ export function ShortcutsModal() {
         { label: "Mute / Unmute", key: "M" },
         { label: "Volume up", key: "Ctrl + Up Arrow" },
         { label: "Volume down", key: "Ctrl + Down Arrow" },
+        { label: "Save to Liked Songs", key: "Alt + Shift + B / L" },
       ],
     },
     {

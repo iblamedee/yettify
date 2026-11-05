@@ -64,7 +64,7 @@ export const TrackRow = React.memo(function TrackRow({
         },
         {
           label: liked ? "Remove from your Liked Songs" : "Save to your Liked Songs",
-          icon: <Heart size={16} />,
+          icon: <Heart size={16} className={liked ? "fill-spotify-green text-spotify-green" : ""} />,
           onClick: () => toggleLikeTrack(track),
         },
         {

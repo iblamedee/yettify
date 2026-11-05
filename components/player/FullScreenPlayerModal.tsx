@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AudioQualityBadge } from "./AudioQualityBadge";
 
 interface FullScreenPlayerModalProps {
   isOpen: boolean;
@@ -33,6 +34,7 @@ export function FullScreenPlayerModal({ isOpen, onClose }: FullScreenPlayerModal
     isPlaying,
     isShuffle,
     repeatMode,
+    playbackQuality,
     togglePlayPause,
     nextTrack,
     previousTrack,
@@ -103,9 +105,12 @@ export function FullScreenPlayerModal({ isOpen, onClose }: FullScreenPlayerModal
       {/* 3. Track Info & Like Button */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex flex-col overflow-hidden mr-4">
-          <h2 className="text-xl font-black text-white truncate leading-tight">
-            {currentTrack.title}
-          </h2>
+          <div className="flex items-center gap-2 overflow-hidden">
+            <h2 className="text-xl font-black text-white truncate leading-tight">
+              {currentTrack.title}
+            </h2>
+            <AudioQualityBadge tier={playbackQuality} testId="fullscreen-quality-badge" />
+          </div>
           <span className="text-sm font-semibold text-[#b3b3b3] truncate mt-0.5">
             {currentTrack.artist?.name || "Unknown Artist"}
           </span>

@@ -38,6 +38,11 @@ export default function PreferencesPage() {
 
   const savePreference = async (key: string, value: any) => {
     try {
+      if (key === "audioQuality" && typeof window !== "undefined") {
+        try {
+          localStorage.setItem("spotify_audio_quality", value);
+        } catch {}
+      }
       await fetch("/api/me/preferences", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },

@@ -1,6 +1,7 @@
 import { test, expect, Page } from "@playwright/test";
 
 async function loginDemoUser(page: Page) {
+  await page.request.post("/api/auth/demo");
   await page.goto("/", { waitUntil: "domcontentloaded" });
   const userMenu = page.locator('[data-testid="user-menu-button"]');
   if (await userMenu.isVisible()) return;
@@ -8,16 +9,6 @@ async function loginDemoUser(page: Page) {
   const topNavDemo = page.getByRole("button", { name: /Demo Login/i });
   if (await topNavDemo.isVisible()) {
     await topNavDemo.click();
-    await expect(userMenu).toBeVisible({ timeout: 10000 });
-    return;
-  }
-
-  const loginBtn = page.getByRole("button", { name: "Log in" });
-  if (await loginBtn.isVisible()) {
-    await loginBtn.click();
-    const demoBtn = page.getByRole("button", { name: /Quick 1-Click Demo Login/i });
-    await expect(demoBtn).toBeVisible({ timeout: 5000 });
-    await demoBtn.click();
     await expect(userMenu).toBeVisible({ timeout: 10000 });
   }
 }
@@ -29,10 +20,12 @@ test.describe("Spotify Like & Library Management System", () => {
 
   test("TC-LIKE-01: PlayerBar like button toggles liked state and syncs to Liked Songs", async ({ page }) => {
     await page.goto("/album/alb_hmhas", { waitUntil: "domcontentloaded" });
+    await expect(page.locator('[data-testid="user-menu-button"]')).toBeVisible({ timeout: 10000 });
 
-    // Play track from album
-    const playBtn = page.getByLabel(/Play BIRDS OF A FEATHER/i);
-    await playBtn.click();
+    // Play album using header play button
+    const headerPlayBtn = page.locator('[data-testid="header-play-button"]');
+    await expect(headerPlayBtn).toBeVisible({ timeout: 10000 });
+    await headerPlayBtn.click();
 
     // Verify PlayerBar appears with like button
     const footer = page.locator("footer");

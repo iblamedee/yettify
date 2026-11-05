@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { TrackTable } from "@/components/track/TrackTable";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLibrary } from "@/contexts/LibraryContext";
@@ -8,38 +8,22 @@ import { usePlayer } from "@/contexts/PlayerContext";
 import { formatDurationWords } from "@/lib/utils";
 import { Track } from "@/types";
 import { Heart, Play, Pause, Shuffle, Search, X, ArrowUpDown } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 type SortOption = "dateAdded" | "title" | "artist" | "album" | "duration";
 
 export default function LikedSongsPage() {
+  const router = useRouter();
   const { user } = useAuth();
-  const { likedTrackIds } = useLibrary();
+  const { likedTracks, likedTrackIds, isLoading: isLibraryLoading } = useLibrary();
   const { currentTrack, isPlaying, playTrack, togglePlayPause, toggleShuffle, isShuffle } = usePlayer();
 
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [searchFilter, setSearchFilter] = useState("");
   const [sortBy, setSortBy] = useState<SortOption>("dateAdded");
   const [sortAsc, setSortAsc] = useState(false);
 
-  useEffect(() => {
-    fetchLikedTracks();
-  }, [likedTrackIds.size]);
-
-  const fetchLikedTracks = async () => {
-    try {
-      setIsLoading(true);
-      const res = await fetch("/api/me/likes/tracks");
-      if (res.ok) {
-        const data = await res.json();
-        setTracks(data.tracks || []);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // Directly consume reactive cached likedTracks from LibraryContext
+  const tracks = likedTracks;
 
   const totalSeconds = useMemo(
     () => tracks.reduce((acc, t) => acc + (t.duration || 0), 0),
@@ -97,7 +81,15 @@ export default function LikedSongsPage() {
     if (isCurrentListPlaying) {
       togglePlayPause();
     } else if (displayedTracks.length > 0) {
-      playTrack(displayedTracks[0], displayedTracks, 0);
+      if (isShuffle) {
+        const randomIndex = Math.floor(Math.random() * displayedTracks.length);
+        const randomTrack = displayedTracks[randomIndex];
+        const remaining = displayedTracks.filter((_, i) => i !== randomIndex);
+        const shuffledQueue = [...remaining].sort(() => Math.random() - 0.5);
+        playTrack(randomTrack, [randomTrack, ...shuffledQueue], 0);
+      } else {
+        playTrack(displayedTracks[0], displayedTracks, 0);
+      }
     }
   };
 
@@ -209,17 +201,25 @@ export default function LikedSongsPage() {
       </div>
 
       {/* 3. Table / Empty States */}
-      {isLoading ? (
+      {isLibraryLoading && tracks.length === 0 ? (
         <div className="py-20 text-center text-[#b3b3b3]">Loading your liked songs...</div>
       ) : tracks.length === 0 ? (
-        <div className="py-24 text-center text-[#b3b3b3] max-w-md mx-auto space-y-3">
-          <div className="w-16 h-16 rounded-full bg-[#242424] flex items-center justify-center mx-auto mb-2">
+        <div className="py-20 text-center text-[#b3b3b3] max-w-md mx-auto space-y-4">
+          <div className="w-16 h-16 rounded-full bg-[#242424] flex items-center justify-center mx-auto mb-2 shadow-lg">
             <Heart size={32} className="text-[#b3b3b3]" />
           </div>
-          <h3 className="text-xl font-bold text-white">Songs you like will appear here</h3>
-          <p className="text-xs text-[#b3b3b3]">
+          <h3 className="text-2xl font-bold text-white">Songs you like will appear here</h3>
+          <p className="text-sm text-[#b3b3b3]">
             Save songs by tapping the heart icon in any playlist, album, or search result.
           </p>
+          <div className="pt-2">
+            <button
+              onClick={() => router.push("/search")}
+              className="px-8 py-3 bg-white text-black font-bold rounded-pill hover:scale-105 active:scale-95 transition-transform text-sm shadow-md"
+            >
+              Find songs
+            </button>
+          </div>
         </div>
       ) : displayedTracks.length === 0 ? (
         <div className="py-20 text-center text-[#b3b3b3]">

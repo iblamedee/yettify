@@ -200,6 +200,7 @@ export function MediaHeader({
         {tracks.length > 0 && (
           <button
             onClick={handleHeaderPlay}
+            data-testid="header-play-button"
             className="w-14 h-14 rounded-full bg-spotify-green text-black flex items-center justify-center hover:scale-106 active:scale-98 transition-transform shadow-spotify-play"
             title={isCurrentHeaderPlaying ? "Pause" : "Play"}
             aria-label={isCurrentHeaderPlaying ? "Pause" : "Play"}

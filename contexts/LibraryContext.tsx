@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 
 interface LibraryContextType {
   likedTrackIds: Set<string>;
+  likedTracks: Track[];
   userPlaylists: Playlist[];
   followedArtistIds: Set<string>;
   followedArtists: Artist[];
@@ -33,10 +34,11 @@ const LibraryContext = createContext<LibraryContextType | undefined>(undefined);
 
 export function LibraryProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  const { showToast } = useUI();
+  const { showToast, openModal } = useUI();
   const router = useRouter();
 
   const [likedTrackIds, setLikedTrackIds] = useState<Set<string>>(new Set());
+  const [likedTracks, setLikedTracks] = useState<Track[]>([]);
   const [userPlaylists, setUserPlaylists] = useState<Playlist[]>([]);
   const [followedArtistIds, setFollowedArtistIds] = useState<Set<string>>(new Set());
   const [followedArtists, setFollowedArtists] = useState<Artist[]>([]);
@@ -49,6 +51,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       refreshLibrary();
     } else {
       setLikedTrackIds(new Set());
+      setLikedTracks([]);
       setUserPlaylists([]);
       setFollowedArtistIds(new Set());
       setFollowedArtists([]);
@@ -69,7 +72,10 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
       if (likesRes.ok) {
         const data = await likesRes.json();
-        setLikedTrackIds((prev) => new Set([...Array.from(prev), ...(data.trackIds || [])]));
+        const fetchedIds: string[] = data.trackIds || [];
+        const fetchedTracks: Track[] = data.tracks || [];
+        setLikedTrackIds(new Set(fetchedIds));
+        setLikedTracks(fetchedTracks);
       }
       if (playlistsRes.ok) {
         const data = await playlistsRes.json();
@@ -82,7 +88,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       }
       if (artistsRes.ok) {
         const data = await artistsRes.json();
-        setFollowedArtistIds((prev) => new Set([...Array.from(prev), ...(data.artistIds || [])]));
+        setFollowedArtistIds(new Set(data.artistIds || []));
         setFollowedArtists((prev) => {
           const fetched: Artist[] = data.artists || [];
           const fetchedIds = new Set(fetched.map((a) => a.id));
@@ -92,7 +98,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       }
       if (albumsRes.ok) {
         const data = await albumsRes.json();
-        setSavedAlbumIds((prev) => new Set([...Array.from(prev), ...(data.albumIds || [])]));
+        setSavedAlbumIds(new Set(data.albumIds || []));
         setSavedAlbums((prev) => {
           const fetched: Album[] = data.albums || [];
           const fetchedIds = new Set(fetched.map((a) => a.id));
@@ -113,22 +119,33 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
   const toggleLikeTrack = async (track: Track): Promise<boolean> => {
     if (!user) {
+      openModal("auth");
       showToast("Please log in to save songs to your library", "info");
       return false;
     }
 
     const wasLiked = likedTrackIds.has(track.id);
-    const newSet = new Set(likedTrackIds);
+    const prevLikedTrackIds = new Set(likedTrackIds);
+    const prevLikedTracks = [...likedTracks];
 
-    // Optimistic UI update
+    // Optimistic UI updates
     if (wasLiked) {
-      newSet.delete(track.id);
+      setLikedTrackIds((prev) => {
+        const next = new Set(prev);
+        next.delete(track.id);
+        return next;
+      });
+      setLikedTracks((prev) => prev.filter((t) => t.id !== track.id));
       showToast("Removed from Liked Songs", "info");
     } else {
-      newSet.add(track.id);
+      const optimisticTrack: Track = {
+        ...track,
+        likedAt: new Date().toISOString(),
+      };
+      setLikedTrackIds((prev) => new Set(prev).add(track.id));
+      setLikedTracks((prev) => [optimisticTrack, ...prev.filter((t) => t.id !== track.id)]);
       showToast("Added to Liked Songs", "success");
     }
-    setLikedTrackIds(newSet);
 
     try {
       if (wasLiked) {
@@ -141,11 +158,18 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           body: JSON.stringify({ trackId: track.id, track }),
         });
         if (!res.ok) throw new Error("Failed to save like");
+        const data = await res.json();
+        if (data.track) {
+          setLikedTracks((prev) =>
+            prev.map((t) => (t.id === track.id ? { ...data.track, likedAt: t.likedAt || data.track.likedAt } : t))
+          );
+        }
       }
       return !wasLiked;
     } catch (err) {
       // Revert on failure
-      setLikedTrackIds(new Set(likedTrackIds));
+      setLikedTrackIds(prevLikedTrackIds);
+      setLikedTracks(prevLikedTracks);
       showToast("Failed to update liked songs", "error");
       return wasLiked;
     }
@@ -361,6 +385,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
     <LibraryContext.Provider
       value={{
         likedTrackIds,
+        likedTracks,
         userPlaylists,
         followedArtistIds,
         followedArtists,
