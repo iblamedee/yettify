@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Ytdl, chooseFormat, Quality } from "@distube/ytdl-core";
 import { resolveAudioForTrack } from "@/lib/musicEngine";
+import { resolveStreamQuality } from "@/lib/audioQuality";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,15 @@ export async function GET(req: NextRequest) {
 
     // 1. Direct URL pass-through
     if (directUrl) {
-      if (isJsonRequested) return NextResponse.json({ success: true, audioUrl: directUrl });
+      if (isJsonRequested) {
+        const qualityInfo = resolveStreamQuality(directUrl);
+        return NextResponse.json({
+          success: true,
+          audioUrl: directUrl,
+          bitrate: qualityInfo.bitrate,
+          qualityTier: qualityInfo.tier,
+        });
+      }
       return NextResponse.redirect(directUrl, 302);
     }
 
@@ -88,21 +97,28 @@ export async function GET(req: NextRequest) {
       }
 
       const durationNum = parseInt(searchParams.get("duration") || "0", 10);
+      const bitrateParam = searchParams.get("bitrate");
+      const targetBitrate: "96" | "160" | "320" =
+        bitrateParam === "96" || bitrateParam === "160" ? bitrateParam : "320";
+
       const resolved = await resolveAudioForTrack(
         resolvedTitle,
         resolvedArtist,
-        "320",
+        targetBitrate,
         durationNum > 0 ? durationNum : undefined
       );
 
       if (resolved?.audioUrl) {
         if (resolved.source === "jiosaavn" && resolved.audioUrl.startsWith("http")) {
           if (isJsonRequested) {
+            const qualityInfo = resolveStreamQuality(resolved.audioUrl, "jiosaavn");
             return NextResponse.json({
               success: true,
               audioUrl: resolved.audioUrl,
               source: "jiosaavn",
               duration: resolved.duration,
+              bitrate: qualityInfo.bitrate,
+              qualityTier: qualityInfo.tier,
             });
           }
           return NextResponse.redirect(resolved.audioUrl, 302);
@@ -116,12 +132,15 @@ export async function GET(req: NextRequest) {
         }
 
         if (isJsonRequested && ytId) {
+          const qualityInfo = resolveStreamQuality(resolved.audioUrl, "youtube");
           return NextResponse.json({
             success: true,
             ytId,
             audioUrl: resolved.audioUrl,
             source: "youtube",
             duration: resolved.duration,
+            bitrate: qualityInfo.bitrate,
+            qualityTier: qualityInfo.tier,
           });
         }
       }

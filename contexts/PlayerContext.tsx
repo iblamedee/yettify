@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Track } from "@/types";
+import { QualityTier, resolveStreamQuality } from "@/lib/audioQuality";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -18,6 +19,7 @@ export interface PlayerContextType {
   isMuted: boolean;
   isShuffle: boolean;
   repeatMode: RepeatMode;
+  playbackQuality: QualityTier;
   userQueue: Track[];
   contextQueue: Track[];
   history: Track[];
@@ -55,6 +57,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [userQueue, setUserQueue] = useState<Track[]>([]);
   const [contextQueue, setContextQueue] = useState<Track[]>([]);
   const [history, setHistory] = useState<Track[]>([]);
+  const [playbackQuality, setPlaybackQuality] = useState<QualityTier>("ULTRA HD");
+  const [audioQualityPref, setAudioQualityPref] = useState<string>("HIGH");
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const prefetchedTrackIdRef = useRef<string | null>(null);
@@ -162,6 +166,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
       const savedShuffle = localStorage.getItem("spotify_shuffle") === "true";
       setIsShuffle(savedShuffle);
+
+      const savedQuality = localStorage.getItem("spotify_audio_quality");
+      if (savedQuality) {
+        setAudioQualityPref(savedQuality);
+      }
+      fetch("/api/me/preferences")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.preferences?.audioQuality) {
+            setAudioQualityPref(data.preferences.audioQuality);
+            try {
+              localStorage.setItem("spotify_audio_quality", data.preferences.audioQuality);
+            } catch {}
+          }
+        })
+        .catch(() => {});
     } catch {
       // ignore
     }
@@ -276,6 +296,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }).catch(() => {});
     } catch {}
 
+    // Determine preferred streaming bitrate
+    let prefBitrate: "96" | "160" | "320" = "320";
+    if (audioQualityPref === "LOW") prefBitrate = "96";
+    else if (audioQualityPref === "NORMAL") prefBitrate = "160";
+
     // 1. Direct CDN audio URL (e.g. JioSaavn 320kbps CDN https://aac.saavncdn.com/...)
     if (
       track.audioUrl &&
@@ -283,7 +308,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       !track.audioUrl.includes("/api/stream") &&
       !track.audioUrl.includes("youtube.com")
     ) {
-      playViaDirectAudio(track.audioUrl);
+      let activeUrl = track.audioUrl;
+      if (activeUrl.includes(".saavncdn.com")) {
+        activeUrl = activeUrl.replace(/_(?:96|160|320)\./, `_${prefBitrate}.`);
+      }
+      const qInfo = resolveStreamQuality(activeUrl, "jiosaavn", audioQualityPref);
+      setPlaybackQuality(qInfo.tier);
+      playViaDirectAudio(activeUrl);
       return;
     }
 
@@ -291,19 +322,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const ytMatch = track.ytId || track.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
     if (ytMatch) {
       track.ytId = ytMatch;
+      const qInfo = resolveStreamQuality(track.audioUrl, "youtube", audioQualityPref);
+      setPlaybackQuality(qInfo.tier);
       playViaYouTube(ytMatch);
       return;
     }
 
     // 3. Resolve stream on demand with strict studio matching
     const queryUrl = track.audioUrl?.startsWith("/api/stream")
-      ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json`
-      : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}`;
+      ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json&bitrate=${prefBitrate}`
+      : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`;
 
     fetch(queryUrl)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
+        if (data.qualityTier) {
+          setPlaybackQuality(data.qualityTier);
+        } else {
+          setPlaybackQuality(resolveStreamQuality(data.audioUrl, data.source, audioQualityPref).tier);
+        }
         if (data.source === "jiosaavn" && data.audioUrl && data.audioUrl.startsWith("http")) {
           track.audioUrl = data.audioUrl;
           playViaDirectAudio(data.audioUrl);
@@ -662,6 +700,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isMuted,
       isShuffle,
       repeatMode,
+      playbackQuality,
       userQueue,
       contextQueue,
       history,
@@ -689,6 +728,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isMuted,
       isShuffle,
       repeatMode,
+      playbackQuality,
       userQueue,
       contextQueue,
       history,
