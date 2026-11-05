@@ -365,6 +365,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const playViaDirectAudio = (url: string) => {
     ensureAudioKeepAlive();
+    // Guard: If this is a YouTube stream URL, delegate directly to YouTube iframe player
+    const ytMatch = url.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
+    if (ytMatch) {
+      if (currentTrack) currentTrack.ytId = ytMatch;
+      playViaYouTube(ytMatch);
+      return;
+    }
+
     activeSourceRef.current = "audio";
     try {
       ytPlayerRef.current?.stopVideo?.();
@@ -785,7 +793,24 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         )
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => {
-            if (data?.audioUrl && audioRef.current) {
+            if (!data) return;
+
+            // If track resolves to YouTube, switch directly to client-side YouTube player
+            const ytId =
+              data.ytId ||
+              (data.audioUrl?.includes("ytId=")
+                ? data.audioUrl.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1]
+                : null);
+
+            if (ytId || data.source === "youtube") {
+              if (ytId) {
+                currentTrack.ytId = ytId;
+                playViaYouTube(ytId);
+              }
+              return;
+            }
+
+            if (data.audioUrl && audioRef.current) {
               audioRef.current.src = data.audioUrl;
               audioRef.current.currentTime = savedTime;
               audioRef.current

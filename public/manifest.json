@@ -1,0 +1,35 @@
+{
+  "name": "Spotify – Web Player: Music for everyone",
+  "short_name": "Spotify",
+  "description": "Play millions of songs and podcasts on your mobile browser seamlessly with background playback.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#121212",
+  "orientation": "portrait",
+  "categories": ["music", "entertainment", "audio"],
+  "icons": [
+    {
+      "src": "https://open.spotifycdn.com/cdn/images/favicon32.b64ecc03.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "https://open.spotifycdn.com/cdn/images/favicon16.1c487bff.png",
+      "sizes": "16x16",
+      "type": "image/png"
+    },
+    {
+      "src": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=192&h=192&fit=crop",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=512&h=512&fit=crop",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

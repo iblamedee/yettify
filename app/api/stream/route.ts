@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Ytdl, chooseFormat, Quality } from "@distube/ytdl-core";
+import { Ytdl, chooseFormat, Quality, Client } from "@distube/ytdl-core";
 import { resolveAudioForTrack } from "@/lib/musicEngine";
 import { resolveStreamQuality } from "@/lib/audioQuality";
 
@@ -7,7 +7,20 @@ export const dynamic = "force-dynamic";
 
 // In-memory cache for resolved Google Video audio URLs (lasts ~3 hours)
 const ytStreamCache = new Map<string, { url: string; expires: number }>();
-const ytInstance = new Ytdl();
+
+// Negative cache for unresolvable / unavailable video IDs (lasts 5 minutes) to prevent hammering
+const ytNegativeCache = new Map<string, number>();
+
+// In-memory throttled logger timestamp map to prevent log spam (max 1 log per minute per id)
+const lastLoggedError = new Map<string, number>();
+
+// Client rotation: TV and VisionOS clients do not invoke BotGuard challenges on datacenter IPs
+const YTDL_CLIENTS = [Client.Tv, Client.VisionOS, Client.WebEmbedded, Client.Mweb] as const;
+
+const ytInstance = new Ytdl({
+  clients: YTDL_CLIENTS,
+  cookie: process.env.YOUTUBE_COOKIE || undefined,
+});
 
 export async function GET(req: NextRequest) {
   try {
@@ -149,8 +162,20 @@ export async function GET(req: NextRequest) {
     // 3. YouTube Audio Streaming with HTTP 206 Partial Content Range Support
     if (ytId) {
       let resolvedUrl: string | null = null;
-      const cached = ytStreamCache.get(ytId);
 
+      // Check negative cache first: if video was recently confirmed unavailable/blocked, avoid re-hammering
+      const negativeExpiry = ytNegativeCache.get(ytId);
+      if (negativeExpiry && negativeExpiry > Date.now()) {
+        if (isJsonRequested) {
+          return NextResponse.json({ success: true, ytId, source: "youtube" });
+        }
+        return NextResponse.json(
+          { error: "Video stream unavailable or restricted" },
+          { status: 404 }
+        );
+      }
+
+      const cached = ytStreamCache.get(ytId);
       if (cached && cached.expires > Date.now()) {
         resolvedUrl = cached.url;
       } else {
@@ -167,23 +192,29 @@ export async function GET(req: NextRequest) {
               url: format.url,
               expires: Date.now() + 3 * 3600 * 1000,
             });
+            ytNegativeCache.delete(ytId);
           }
         } catch (ytErr: any) {
-          console.error("Ytdl resolution error for", ytId, ytErr.message);
+          const now = Date.now();
+          const lastLog = lastLoggedError.get(ytId) || 0;
+          if (now - lastLog > 60000) {
+            console.warn(`[YouTube Stream] Resolution note for ${ytId}: ${ytErr.message}`);
+            lastLoggedError.set(ytId, now);
+          }
         }
 
         // Resilient fallback for serverless cloud IPs (Vercel / AWS)
         if (!resolvedUrl) {
           try {
             const fallbackEndpoints = [
-              `https://pipedapi.kavin.rocks/streams/${ytId}`,
               `https://api.piped.private.coffee/streams/${ytId}`,
+              `https://piped.video/api/v1/streams/${ytId}`,
               `https://invidious.nerdvpn.de/api/v1/videos/${ytId}`,
             ];
             for (const ep of fallbackEndpoints) {
               const fRes = await fetch(ep, {
-                headers: { "User-Agent": "Mozilla/5.0" },
-                signal: AbortSignal.timeout(3000),
+                headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+                signal: AbortSignal.timeout(2500),
               });
               if (!fRes.ok) continue;
               const fData = await fRes.json();
@@ -197,6 +228,7 @@ export async function GET(req: NextRequest) {
                     url: best.url,
                     expires: Date.now() + 3 * 3600 * 1000,
                   });
+                  ytNegativeCache.delete(ytId);
                   break;
                 }
               }
@@ -210,6 +242,7 @@ export async function GET(req: NextRequest) {
                     url: aud.url,
                     expires: Date.now() + 3 * 3600 * 1000,
                   });
+                  ytNegativeCache.delete(ytId);
                   break;
                 }
               }
@@ -221,6 +254,9 @@ export async function GET(req: NextRequest) {
       }
 
       if (!resolvedUrl) {
+        // Cache negative result for 5 minutes so rapid retries do not trigger IP bans
+        ytNegativeCache.set(ytId, Date.now() + 5 * 60 * 1000);
+
         if (isJsonRequested) {
           return NextResponse.json({ success: true, ytId, source: "youtube" });
         }
