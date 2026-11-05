@@ -234,45 +234,12 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ success: true, audioUrl: resolvedUrl, ytId, source: "youtube" });
       }
 
-      if (redirect) {
-        return NextResponse.redirect(resolvedUrl, 302);
-      }
-
-      // Stream with HTTP Range support for scrubbing / fast buffering
-      const clientRange = req.headers.get("range");
-      const upstreamRes = await fetch(resolvedUrl, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          ...(clientRange ? { Range: clientRange } : {}),
-        },
-      });
-
-      const responseHeaders = new Headers();
-      responseHeaders.set(
-        "Content-Type",
-        upstreamRes.headers.get("content-type") || "audio/webm"
-      );
-      responseHeaders.set("Accept-Ranges", "bytes");
-
-      if (upstreamRes.headers.get("content-range")) {
-        responseHeaders.set(
-          "Content-Range",
-          upstreamRes.headers.get("content-range")!
-        );
-      }
-      if (upstreamRes.headers.get("content-length")) {
-        responseHeaders.set(
-          "Content-Length",
-          upstreamRes.headers.get("content-length")!
-        );
-      }
-      responseHeaders.set("Cache-Control", "public, max-age=3600");
-
-      return new Response(upstreamRes.body, {
-        status: upstreamRes.status,
-        headers: responseHeaders,
-      });
+      // Always redirect to the resolved URL.
+      // Proxying audio through a Vercel serverless function causes playback failure because:
+      // 1. Vercel enforces a 4.5MB response body limit — audio files far exceed this.
+      // 2. Vercel function streaming timeouts (10s Hobby / 60s Pro) kill long-lived audio connections.
+      // The browser fetches the audio directly from Google's CDN once redirected.
+      return NextResponse.redirect(resolvedUrl, 302);
     }
 
     return NextResponse.json(

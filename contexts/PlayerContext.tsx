@@ -248,33 +248,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        // Mobile browser tab / screen minimized or switched
-        if (activeSourceRef.current === "youtube" && isPlayingRef.current && currentTrack) {
-          try {
-            const ytId =
-              currentTrack.ytId ||
-              currentTrack.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
-            if (ytId && ytPlayerRef.current?.getCurrentTime) {
-              const currentSeek = ytPlayerRef.current.getCurrentTime() || currentTime;
-              try {
-                ytPlayerRef.current.pauseVideo?.();
-              } catch {}
-
-              const streamAudioUrl = `/api/stream?ytId=${encodeURIComponent(ytId)}&redirect=true`;
-              activeSourceRef.current = "audio";
-              if (audioRef.current) {
-                audioRef.current.src = streamAudioUrl;
-                audioRef.current.currentTime = currentSeek;
-                audioRef.current
-                  .play()
-                  .then(() => setIsPlaying(true))
-                  .catch(() => {});
-              }
-            }
-          } catch (e) {
-            console.warn("Seamless background handoff error:", e);
-          }
-        }
+        // On Vercel/serverless, the audio element cannot play a redirect to a
+        // signed Google CDN URL (CORS + origin restrictions). Let the YouTube
+        // iframe player continue playing in the background — modern browsers
+        // allow this for media with active MediaSession.
+        // No handoff needed.
       }
     };
 
@@ -402,14 +380,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const playViaYouTube = (ytId: string) => {
     ensureAudioKeepAlive();
-
-    // If browser is already backgrounded or screen locked, mobile OS blocks YouTube iframe.
-    // Seamlessly route straight to native audio stream!
-    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-      playViaDirectAudio(`/api/stream?ytId=${encodeURIComponent(ytId)}&redirect=true`);
-      return;
-    }
-
     activeSourceRef.current = "youtube";
     if (audioRef.current) {
       try {
@@ -753,11 +723,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             fetch(queryUrl)
               .then((res) => (res.ok ? res.json() : null))
               .then((data) => {
-                if (data?.audioUrl) {
+                if (data?.audioUrl && data.source === "jiosaavn") {
                   next.audioUrl = data.audioUrl;
                 } else if (data?.ytId) {
+                  // Store ytId directly — playTrack will use playViaYouTube(ytId).
+                  // Don't set audioUrl to a redirect URL; Google CDN signed URLs
+                  // cannot be loaded by <audio> due to CORS/origin restrictions.
                   next.ytId = data.ytId;
-                  next.audioUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
                 }
               })
               .catch(() => {});
