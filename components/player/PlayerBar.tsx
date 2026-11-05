@@ -25,6 +25,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FullScreenPlayerModal } from "./FullScreenPlayerModal";
+import { AudioQualityBadge } from "./AudioQualityBadge";
 
 export function PlayerBar() {
   const router = useRouter();
@@ -35,6 +36,7 @@ export function PlayerBar() {
     isMuted,
     isShuffle,
     repeatMode,
+    playbackQuality,
     togglePlayPause,
     setVolume,
     toggleMute,
@@ -92,9 +94,12 @@ export function PlayerBar() {
             <span className="text-xs font-bold text-white truncate">
               {currentTrack.title}
             </span>
-            <span className="text-[11px] text-[#b3b3b3] truncate">
-              {currentTrack.artist?.name || "Unknown Artist"}
-            </span>
+            <div className="flex items-center gap-1.5 overflow-hidden">
+              <span className="text-[11px] text-[#b3b3b3] truncate">
+                {currentTrack.artist?.name || "Unknown Artist"}
+              </span>
+              <AudioQualityBadge tier={playbackQuality} testId="mobile-mini-quality-badge" />
+            </div>
           </div>
         </div>
 
@@ -152,12 +157,15 @@ export function PlayerBar() {
         </div>
 
         <div className="flex flex-col overflow-hidden mr-2">
-          <Link
-            href={`/album/${currentTrack.albumId || currentTrack.album?.id || `alb_${(currentTrack.album?.title || currentTrack.title).toLowerCase().replace(/[^a-z0-9]/g, "_")}`}`}
-            className="text-sm font-semibold text-white hover:underline truncate"
-          >
-            {currentTrack.title}
-          </Link>
+          <div className="flex items-center gap-2 overflow-hidden">
+            <Link
+              href={`/album/${currentTrack.albumId || currentTrack.album?.id || `alb_${(currentTrack.album?.title || currentTrack.title).toLowerCase().replace(/[^a-z0-9]/g, "_")}`}`}
+              className="text-sm font-semibold text-white hover:underline truncate"
+            >
+              {currentTrack.title}
+            </Link>
+            <AudioQualityBadge tier={playbackQuality} testId="desktop-quality-badge" />
+          </div>
           <div className="flex items-center text-xs text-[#b3b3b3] truncate">
             {(currentTrack.artist?.name || "Unknown Artist")
               .split(",")
