@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import Link from "next/navigation";
 import { usePathname, useRouter } from "next/navigation";
 import { useUI } from "@/contexts/UIContext";
 import { useLibrary } from "@/contexts/LibraryContext";
+import { usePlayer } from "@/contexts/PlayerContext";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Home,
@@ -12,6 +12,8 @@ import {
   Library,
   Plus,
   Heart,
+  Play,
+  Pause,
   Music,
   User as UserIcon,
   Disc,
@@ -24,7 +26,8 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { sidebarWidth, setSidebarWidth, showContextMenu } = useUI();
-  const { userPlaylists, likedTrackIds, savedAlbums, followedArtists, createPlaylist, deletePlaylist } = useLibrary();
+  const { userPlaylists, likedTrackIds, likedTracks, savedAlbums, followedArtists, createPlaylist, deletePlaylist } = useLibrary();
+  const { currentTrack, isPlaying, playTrack, togglePlayPause } = usePlayer();
   const { isAuthenticated } = useAuth();
 
   const [activeFilter, setActiveFilter] = useState<"all" | "playlists" | "artists" | "albums">("all");
@@ -230,20 +233,53 @@ export function Sidebar() {
             <button
               onClick={() => router.push("/collection/tracks")}
               data-testid="sidebar-liked-songs-link"
-              className={`w-full p-2 rounded-md flex items-center gap-3 hover:bg-[#1a1a1a] transition-colors group ${
+              className={`w-full p-2 rounded-md flex items-center justify-between hover:bg-[#1a1a1a] transition-colors group ${
                 isLikedActive ? "bg-[#232323]" : ""
               }`}
             >
-              <div className="w-12 h-12 rounded bg-gradient-purple flex items-center justify-center shrink-0 shadow-md">
-                <Heart size={20} className="fill-white text-white" />
-              </div>
-              <div className="flex flex-col text-left overflow-hidden">
-                <span className={`text-sm font-semibold truncate ${isLikedActive ? "text-spotify-green" : "text-white"}`}>
-                  Liked Songs
-                </span>
-                <span className="text-xs text-[#b3b3b3] truncate flex items-center gap-1">
-                  📌 Playlist • {likedTrackIds.size} songs
-                </span>
+              <div className="flex items-center gap-3 overflow-hidden">
+                <div className="relative w-12 h-12 rounded bg-gradient-purple flex items-center justify-center shrink-0 shadow-md group/cover overflow-hidden">
+                  <Heart
+                    size={20}
+                    className={`fill-white text-white transition-opacity ${
+                      likedTracks.length > 0 ? "group-hover/cover:opacity-0" : ""
+                    }`}
+                  />
+                  {likedTracks.length > 0 && (
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const isLikedSongsPlaying = isPlaying && likedTracks.some((t) => t.id === currentTrack?.id);
+                        if (isLikedSongsPlaying) {
+                          togglePlayPause();
+                        } else {
+                          playTrack(likedTracks[0], likedTracks, 0);
+                        }
+                      }}
+                      title={
+                        isPlaying && likedTracks.some((t) => t.id === currentTrack?.id)
+                          ? "Pause Liked Songs"
+                          : "Play Liked Songs"
+                      }
+                      aria-label="Play or pause liked songs"
+                      className="absolute inset-0 m-auto w-8 h-8 rounded-full bg-spotify-green text-black flex items-center justify-center opacity-0 group-hover/cover:opacity-100 hover:scale-105 active:scale-95 transition-all shadow-md cursor-pointer"
+                    >
+                      {isPlaying && likedTracks.some((t) => t.id === currentTrack?.id) ? (
+                        <Pause size={14} className="fill-black" />
+                      ) : (
+                        <Play size={14} className="fill-black ml-0.5" />
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col text-left overflow-hidden">
+                  <span className={`text-sm font-semibold truncate ${isLikedActive ? "text-spotify-green" : "text-white"}`}>
+                    Liked Songs
+                  </span>
+                  <span className="text-xs text-[#b3b3b3] truncate flex items-center gap-1">
+                    📌 Playlist • {likedTrackIds.size} songs
+                  </span>
+                </div>
               </div>
             </button>
           )}

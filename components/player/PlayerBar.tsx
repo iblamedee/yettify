@@ -107,8 +107,10 @@ export function PlayerBar() {
         <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
           <button
             onClick={() => toggleLikeTrack(currentTrack)}
-            className="p-2 text-[#b3b3b3] hover:text-white active:scale-90 transition-transform"
+            className="p-2 text-[#b3b3b3] hover:text-white hover:scale-110 active:scale-90 transition-transform"
             title={liked ? "Remove from Liked Songs" : "Save to Liked Songs"}
+            aria-label={liked ? "Remove from Liked Songs" : "Save to Liked Songs"}
+            data-testid="mobile-player-like-button"
           >
             <Heart
               size={18}

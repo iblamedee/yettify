@@ -82,7 +82,16 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({ success: true, track: liked.track }, { status: 201 });
+    return NextResponse.json(
+      {
+        success: true,
+        track: {
+          ...liked.track,
+          likedAt: liked.likedAt,
+        },
+      },
+      { status: 201 }
+    );
   } catch (error: any) {
     console.error("POST /api/me/likes/tracks error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
