@@ -71,123 +71,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const prefetchedTrackIdRef = useRef<string | null>(null);
-  const ytPlayerRef = useRef<any>(null);
-  const ytPlayerReadyRef = useRef<boolean>(false);
-  const activeSourceRef = useRef<"audio" | "youtube">("audio");
   const isPlayingRef = useRef<boolean>(isPlaying);
-  const audioContextRef = useRef<AudioContext | null>(null);
   const retryCountRef = useRef<number>(0);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastPositionStateUpdateRef = useRef<number>(0);
 
-  const onEndedRef = useRef<() => void>(() => {});
-
   useEffect(() => {
     isPlayingRef.current = isPlaying;
-  }, [isPlaying]);
-
-  // Mobile Web Audio Keep-Alive: Keeps the browser audio hardware session active across track transitions
-  const ensureAudioKeepAlive = useCallback(() => {
-    try {
-      if (typeof window === "undefined") return;
-      if (!audioContextRef.current) {
-        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        if (AudioCtx) {
-          const ctx = new AudioCtx();
-          // 1-second silent looping buffer
-          const buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-          const source = ctx.createBufferSource();
-          source.buffer = buffer;
-          source.loop = true;
-          const gain = ctx.createGain();
-          gain.gain.value = 0.001; // inaudible
-          source.connect(gain);
-          gain.connect(ctx.destination);
-          source.start(0);
-          audioContextRef.current = ctx;
-        }
-      }
-      if (audioContextRef.current && audioContextRef.current.state === "suspended") {
-        audioContextRef.current.resume().catch(() => {});
-      }
-    } catch {
-      // AudioContext init fallback
-    }
-  }, []);
-
-
-  // Initialize official YouTube Iframe Player in background
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const initYT = () => {
-      if ((window as any).YT && (window as any).YT.Player && !ytPlayerRef.current) {
-        try {
-          ytPlayerRef.current = new (window as any).YT.Player("yt-player-element", {
-            height: "1",
-            width: "1",
-            playerVars: {
-              autoplay: 0,
-              controls: 0,
-              disablekb: 1,
-              fs: 0,
-              rel: 0,
-              playsinline: 1,
-            },
-            events: {
-              onReady: (event: any) => {
-                ytPlayerReadyRef.current = true;
-                try {
-                  event.target.setVolume(isMuted ? 0 : Math.round(volume * 100));
-                } catch {}
-              },
-              onStateChange: (event: any) => {
-                if (activeSourceRef.current === "youtube") {
-                  // 1 = playing, 2 = paused, 0 = ended
-                  if (event.data === 1) {
-                    setIsPlaying(true);
-                  } else if (event.data === 2) {
-                    setIsPlaying(false);
-                  } else if (event.data === 0) {
-                    onEndedRef.current();
-                  }
-                }
-              },
-            },
-          });
-        } catch (e) {
-          console.warn("YouTube iframe player init:", e);
-        }
-      }
-    };
-
-    if (!(window as any).YT) {
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      const firstScriptTag = document.getElementsByTagName("script")[0];
-      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
-      (window as any).onYouTubeIframeAPIReady = initYT;
-    } else {
-      initYT();
-    }
-  }, []);
-
-  // Poll current time when YouTube is actively playing
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isPlaying) {
-      interval = setInterval(() => {
-        if (activeSourceRef.current === "youtube" && ytPlayerRef.current?.getCurrentTime) {
-          try {
-            const cur = ytPlayerRef.current.getCurrentTime();
-            const dur = ytPlayerRef.current.getDuration();
-            if (typeof cur === "number" && !isNaN(cur)) setCurrentTime(cur);
-            if (typeof dur === "number" && !isNaN(dur) && dur > 0) setDuration(dur);
-          } catch {}
-        }
-      }, 300);
-    }
-    return () => clearInterval(interval);
   }, [isPlaying]);
 
   // Restore player state from localStorage on initial load
@@ -230,39 +120,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Sync volume with both audio element and YouTube player
+  // Sync volume with HTML5 audio element
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = isMuted ? 0 : volume;
     }
-    if (ytPlayerRef.current && ytPlayerReadyRef.current) {
-      try {
-        ytPlayerRef.current.setVolume(isMuted ? 0 : Math.round(volume * 100));
-      } catch {}
-    }
   }, [volume, isMuted]);
-
-  // Mobile Seamless Handoff: Switch from YouTube Iframe to native HTML5 Audio when tab/browser is backgrounded
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") return;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        // On Vercel/serverless, the audio element cannot play a redirect to a
-        // signed Google CDN URL (CORS + origin restrictions). Let the YouTube
-        // iframe player continue playing in the background — modern browsers
-        // allow this for media with active MediaSession.
-        // No handoff needed.
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("pagehide", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("pagehide", handleVisibilityChange);
-    };
-  }, [currentTrack, currentTime]);
 
   // Sync MediaSession playbackState
   useEffect(() => {
@@ -271,75 +134,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isPlaying]);
 
-  // Handle MediaSession metadata & action handlers for Mobile Lockscreen / Notification Shade
-  useEffect(() => {
-    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
-
-    if (currentTrack) {
-      const coverUrl =
-        currentTrack.album?.coverUrl ||
-        "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=512&h=512&fit=crop";
-
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: currentTrack.title,
-        artist: currentTrack.artist?.name || "Unknown Artist",
-        album: currentTrack.album?.title || "Unknown Album",
-        artwork: [
-          { src: coverUrl, sizes: "96x96", type: "image/jpeg" },
-          { src: coverUrl, sizes: "128x128", type: "image/jpeg" },
-          { src: coverUrl, sizes: "192x192", type: "image/jpeg" },
-          { src: coverUrl, sizes: "256x256", type: "image/jpeg" },
-          { src: coverUrl, sizes: "384x384", type: "image/jpeg" },
-          { src: coverUrl, sizes: "512x512", type: "image/jpeg" },
-        ],
-      });
-    }
-
-    try {
-      navigator.mediaSession.setActionHandler("play", () => {
-        ensureAudioKeepAlive();
-        togglePlayPause();
-      });
-      navigator.mediaSession.setActionHandler("pause", () => togglePlayPause());
-      navigator.mediaSession.setActionHandler("nexttrack", () => {
-        ensureAudioKeepAlive();
-        nextTrack();
-      });
-      navigator.mediaSession.setActionHandler("previoustrack", () => {
-        ensureAudioKeepAlive();
-        previousTrack();
-      });
-      navigator.mediaSession.setActionHandler("seekto", (details) => {
-        if (details.seekTime !== undefined) {
-          seekTo(details.seekTime);
-        }
-      });
-      navigator.mediaSession.setActionHandler("seekbackward", (details) => {
-        const offset = details.seekOffset || 10;
-        const cur = audioRef.current?.currentTime ?? currentTime ?? 0;
-        seekTo(Math.max(0, cur - offset));
-      });
-      navigator.mediaSession.setActionHandler("seekforward", (details) => {
-        const offset = details.seekOffset || 10;
-        const cur = audioRef.current?.currentTime ?? currentTime ?? 0;
-        const maxDur = duration || 9999;
-        seekTo(Math.min(maxDur, cur + offset));
-      });
-      navigator.mediaSession.setActionHandler("stop", () => {
-        if (audioRef.current) audioRef.current.pause();
-        if (ytPlayerRef.current) {
-          try {
-            ytPlayerRef.current.pauseVideo?.();
-          } catch {}
-        }
-        setIsPlaying(false);
-      });
-    } catch {
-      // Ignore unsupported action handler errors on older mobile engines
-    }
-  }, [currentTrack, duration, currentTime, ensureAudioKeepAlive]);
-
-  // Sync MediaSession positionState for Mobile Lockscreen Scrubber
+  // Sync MediaSession positionState for Mobile Lockscreen / Notification Scrubber
   const updateMediaSessionPositionState = useCallback((cur: number, dur: number) => {
     if (
       typeof window !== "undefined" &&
@@ -363,62 +158,27 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Play audio directly through native HTML5 audio element
   const playViaDirectAudio = (url: string) => {
-    ensureAudioKeepAlive();
-    // Guard: If this is a YouTube stream URL, delegate directly to YouTube iframe player
-    const ytMatch = url.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
-    if (ytMatch) {
-      if (currentTrack) currentTrack.ytId = ytMatch;
-      playViaYouTube(ytMatch);
-      return;
-    }
-
-    activeSourceRef.current = "audio";
-    try {
-      ytPlayerRef.current?.stopVideo?.();
-    } catch {}
-    if (audioRef.current) {
+    if (!audioRef.current) return;
+    if (audioRef.current.src !== url) {
       audioRef.current.src = url;
-      audioRef.current
-        .play()
-        .then(() => setIsPlaying(true))
-        .catch(() => setIsPlaying(true));
     }
-  };
-
-  const playViaYouTube = (ytId: string) => {
-    ensureAudioKeepAlive();
-    activeSourceRef.current = "youtube";
-    if (audioRef.current) {
-      try {
-        audioRef.current.pause();
-      } catch {}
-    }
-    if (ytPlayerRef.current && ytPlayerReadyRef.current) {
-      try {
-        ytPlayerRef.current.loadVideoById(ytId, 0);
-        ytPlayerRef.current.playVideo();
+    audioRef.current
+      .play()
+      .then(() => {
         setIsPlaying(true);
-      } catch {
+        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+      })
+      .catch(() => {
+        // Autoplay may wait for user interaction or buffer readiness
         setIsPlaying(true);
-      }
-    } else {
-      // If YT iframe is still loading, wait 300ms
-      setTimeout(() => {
-        if (ytPlayerRef.current) {
-          try {
-            ytPlayerRef.current.loadVideoById(ytId, 0);
-            ytPlayerRef.current.playVideo();
-            setIsPlaying(true);
-          } catch {}
-        }
-      }, 350);
-    }
+      });
   };
-
 
   const playTrack = (track: Track, contextList?: Track[], startIndex?: number) => {
     prefetchedTrackIdRef.current = null;
+    retryCountRef.current = 0;
     setCurrentTrack(track);
     setCurrentTime(0);
 
@@ -448,7 +208,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (audioQualityPref === "LOW") prefBitrate = "96";
     else if (audioQualityPref === "NORMAL") prefBitrate = "160";
 
-    // 1. Direct CDN audio URL (e.g. JioSaavn 320kbps CDN https://aac.saavncdn.com/...)
+    // 1. Direct CDN audio URL (e.g. JioSaavn 320kbps CDN https://aac.saavncdn.com/... or sample MP3)
     if (
       track.audioUrl &&
       (track.audioUrl.startsWith("http://") || track.audioUrl.startsWith("https://")) &&
@@ -465,17 +225,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // 2. Direct YouTube ID
+    // 2. Direct YouTube ID (streamed natively through /api/stream audio proxy)
     const ytMatch = track.ytId || track.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
     if (ytMatch) {
       track.ytId = ytMatch;
       const qInfo = resolveStreamQuality(track.audioUrl, "youtube", audioQualityPref);
       setPlaybackQuality(qInfo.tier);
-      playViaYouTube(ytMatch);
+      playViaDirectAudio(`/api/stream?ytId=${encodeURIComponent(ytMatch)}&redirect=true`);
       return;
     }
 
-    // 3. Resolve stream on demand with strict studio matching
+    // 3. Resolve stream on demand with immediate direct streaming fallback
+    // Synchronously assign the direct streaming redirect URL so mobile browsers
+    // maintain user activation continuation without triggering NotAllowedError!
+    const directFallbackUrl = track.audioUrl?.startsWith("/api/stream")
+      ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}redirect=true`
+      : `/api/stream?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&redirect=true`;
+
+    playViaDirectAudio(directFallbackUrl);
+
+    // Concurrently fetch stream metadata and direct CDN source for quality resolution
     const queryUrl = track.audioUrl?.startsWith("/api/stream")
       ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json&bitrate=${prefBitrate}`
       : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`;
@@ -489,15 +258,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         } else {
           setPlaybackQuality(resolveStreamQuality(data.audioUrl, data.source, audioQualityPref).tier);
         }
+
         if (data.source === "jiosaavn" && data.audioUrl && data.audioUrl.startsWith("http")) {
+          track.audioUrl = data.audioUrl;
+          playViaDirectAudio(data.audioUrl);
+        } else if (data.audioUrl && data.audioUrl.startsWith("http")) {
           track.audioUrl = data.audioUrl;
           playViaDirectAudio(data.audioUrl);
         } else if (data.ytId) {
           track.ytId = data.ytId;
-          playViaYouTube(data.ytId);
-        } else if (data.audioUrl) {
-          track.audioUrl = data.audioUrl;
-          playViaDirectAudio(data.audioUrl);
+          const streamUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
+          if (audioRef.current && audioRef.current.src !== streamUrl) {
+            playViaDirectAudio(streamUrl);
+          }
         }
       })
       .catch(() => {
@@ -506,48 +279,30 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   };
 
   const togglePlayPause = () => {
-    if (!currentTrack) return;
+    if (!currentTrack || !audioRef.current) return;
 
-    if (activeSourceRef.current === "youtube") {
-      if (isPlayingRef.current) {
-        try {
-          ytPlayerRef.current?.pauseVideo?.();
-        } catch {}
-        setIsPlaying(false);
-      } else {
-        try {
-          ytPlayerRef.current?.playVideo?.();
-        } catch {}
-        setIsPlaying(true);
-      }
-      return;
-    }
-
-    if (!audioRef.current) return;
     if (isPlayingRef.current) {
       audioRef.current.pause();
       setIsPlaying(false);
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
     } else {
       audioRef.current
         .play()
-        .then(() => setIsPlaying(true))
+        .then(() => {
+          setIsPlaying(true);
+          if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+        })
         .catch(() => setIsPlaying(true));
     }
   };
 
   const seekTo = (seconds: number) => {
     const clamped = Math.max(0, Math.min(duration || 9999, seconds));
-    if (activeSourceRef.current === "youtube") {
-      try {
-        ytPlayerRef.current?.seekTo?.(clamped, true);
-      } catch {}
-      setCurrentTime(clamped);
-      return;
+    if (audioRef.current) {
+      audioRef.current.currentTime = clamped;
     }
-
-    if (!audioRef.current) return;
-    audioRef.current.currentTime = clamped;
     setCurrentTime(clamped);
+    updateMediaSessionPositionState(clamped, duration);
   };
 
   const setVolume = (vol: number) => {
@@ -560,9 +315,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       audioRef.current.volume = clamped;
     }
     try {
-      ytPlayerRef.current?.setVolume?.(Math.round(clamped * 100));
-    } catch {}
-    try {
       localStorage.setItem("spotify_player_volume", clamped.toString());
     } catch {
       // ignore
@@ -574,18 +326,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setIsMuted(false);
       setVolumeState(previousVolume || 0.5);
       if (audioRef.current) audioRef.current.volume = previousVolume || 0.5;
-      try {
-        ytPlayerRef.current?.unMute?.();
-        ytPlayerRef.current?.setVolume?.(Math.round((previousVolume || 0.5) * 100));
-      } catch {}
     } else {
       setPreviousVolume(volume);
       setIsMuted(true);
       setVolumeState(0);
       if (audioRef.current) audioRef.current.volume = 0;
-      try {
-        ytPlayerRef.current?.mute?.();
-      } catch {}
     }
   };
 
@@ -734,10 +479,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
                 if (data?.audioUrl && data.source === "jiosaavn") {
                   next.audioUrl = data.audioUrl;
                 } else if (data?.ytId) {
-                  // Store ytId directly — playTrack will use playViaYouTube(ytId).
-                  // Don't set audioUrl to a redirect URL; Google CDN signed URLs
-                  // cannot be loaded by <audio> due to CORS/origin restrictions.
                   next.ytId = data.ytId;
+                  next.audioUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
+                } else if (data?.audioUrl) {
+                  next.audioUrl = data.audioUrl;
                 }
               })
               .catch(() => {});
@@ -757,21 +502,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const onEnded = () => {
     if (repeatMode === "one") {
-      if (activeSourceRef.current === "youtube") {
-        try {
-          ytPlayerRef.current?.seekTo?.(0, true);
-          ytPlayerRef.current?.playVideo?.();
-        } catch {}
-      } else if (audioRef.current) {
+      if (audioRef.current) {
         audioRef.current.currentTime = 0;
         audioRef.current.play().catch(() => {});
       }
     } else {
-      ensureAudioKeepAlive();
       nextTrack();
     }
   };
-  onEndedRef.current = onEnded;
 
   // Background Network Error Recovery with Exponential Backoff (1s, 2s, 4s)
   const onAudioError = () => {
@@ -794,24 +532,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => {
             if (!data) return;
+            const directUrl =
+              data.source === "jiosaavn" && data.audioUrl?.startsWith("http")
+                ? data.audioUrl
+                : data.ytId
+                ? `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`
+                : data.audioUrl;
 
-            // If track resolves to YouTube, switch directly to client-side YouTube player
-            const ytId =
-              data.ytId ||
-              (data.audioUrl?.includes("ytId=")
-                ? data.audioUrl.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1]
-                : null);
-
-            if (ytId || data.source === "youtube") {
-              if (ytId) {
-                currentTrack.ytId = ytId;
-                playViaYouTube(ytId);
-              }
-              return;
-            }
-
-            if (data.audioUrl && audioRef.current) {
-              audioRef.current.src = data.audioUrl;
+            if (directUrl && audioRef.current) {
+              audioRef.current.src = directUrl;
               audioRef.current.currentTime = savedTime;
               audioRef.current
                 .play()
@@ -823,6 +552,60 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }, delay);
     }
   };
+
+  // Handle MediaSession metadata & action handlers for Mobile Lockscreen / Notification Shade
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+
+    if (currentTrack) {
+      const coverUrl =
+        currentTrack.album?.coverUrl ||
+        "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=512&h=512&fit=crop";
+
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title,
+        artist: currentTrack.artist?.name || "Unknown Artist",
+        album: currentTrack.album?.title || "Unknown Album",
+        artwork: [
+          { src: coverUrl, sizes: "96x96", type: "image/jpeg" },
+          { src: coverUrl, sizes: "128x128", type: "image/jpeg" },
+          { src: coverUrl, sizes: "192x192", type: "image/jpeg" },
+          { src: coverUrl, sizes: "256x256", type: "image/jpeg" },
+          { src: coverUrl, sizes: "384x384", type: "image/jpeg" },
+          { src: coverUrl, sizes: "512x512", type: "image/jpeg" },
+        ],
+      });
+    }
+
+    try {
+      navigator.mediaSession.setActionHandler("play", () => togglePlayPause());
+      navigator.mediaSession.setActionHandler("pause", () => togglePlayPause());
+      navigator.mediaSession.setActionHandler("nexttrack", () => nextTrack());
+      navigator.mediaSession.setActionHandler("previoustrack", () => previousTrack());
+      navigator.mediaSession.setActionHandler("seekto", (details) => {
+        if (details.seekTime !== undefined) {
+          seekTo(details.seekTime);
+        }
+      });
+      navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+        const offset = details.seekOffset || 10;
+        const cur = audioRef.current?.currentTime ?? currentTime ?? 0;
+        seekTo(Math.max(0, cur - offset));
+      });
+      navigator.mediaSession.setActionHandler("seekforward", (details) => {
+        const offset = details.seekOffset || 10;
+        const cur = audioRef.current?.currentTime ?? currentTime ?? 0;
+        const maxDur = duration || 9999;
+        seekTo(Math.min(maxDur, cur + offset));
+      });
+      navigator.mediaSession.setActionHandler("stop", () => {
+        if (audioRef.current) audioRef.current.pause();
+        setIsPlaying(false);
+      });
+    } catch {
+      // Ignore unsupported action handler errors on older mobile engines
+    }
+  }, [currentTrack, duration, currentTime]);
 
   // Keyboard shortcuts listener
   useEffect(() => {
@@ -977,23 +760,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           onLoadedMetadata={onLoadedMetadata}
           onEnded={onEnded}
           onError={onAudioError}
+          onPlay={() => {
+            setIsPlaying(true);
+            if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+          }}
+          onPause={() => {
+            setIsPlaying(false);
+            if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+          }}
           preload="auto"
           playsInline
         />
-        <div
-          id="yt-player-container"
-          style={{
-            position: "fixed",
-            top: "-9999px",
-            left: "-9999px",
-            width: "1px",
-            height: "1px",
-            opacity: 0,
-            pointerEvents: "none",
-          }}
-        >
-          <div id="yt-player-element" />
-        </div>
         {children}
       </PlayerProgressContext.Provider>
     </PlayerContext.Provider>

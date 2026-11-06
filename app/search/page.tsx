@@ -34,6 +34,7 @@ function SearchContent() {
   });
   const [isLoading, setIsLoading] = useState(false);
   const searchCacheRef = useRef<Map<string, any>>(new Map());
+  const requestIdRef = useRef(0);
   const [topImgError, setTopImgError] = useState(false);
 
   // Fetch genres for default browse view
@@ -44,9 +45,12 @@ function SearchContent() {
       .catch(() => {});
   }, []);
 
-  // Fetch search results when query or filter changes with instant client-side cache
+  // Fetch search results when query or filter changes with instant client-side cache and AbortController
   useEffect(() => {
-    if (!query.trim()) return;
+    if (!query.trim()) {
+      setIsLoading(false);
+      return;
+    }
 
     const cacheKey = `${filter}:::${query.trim().toLowerCase()}`;
     if (searchCacheRef.current.has(cacheKey)) {
@@ -55,11 +59,16 @@ function SearchContent() {
       return;
     }
 
+    const currentRequestId = ++requestIdRef.current;
+    const controller = new AbortController();
+
     setIsLoading(true);
-    fetch(`/api/search?q=${encodeURIComponent(query)}&type=${filter}`)
+    fetch(`/api/search?q=${encodeURIComponent(query.trim())}&type=${filter}`, {
+      signal: controller.signal,
+    })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!data) return;
+        if (!data || currentRequestId !== requestIdRef.current) return;
         const resultPayload = {
           topResult: data.topResult,
           tracks: data.tracks || [],
@@ -70,8 +79,18 @@ function SearchContent() {
         searchCacheRef.current.set(cacheKey, resultPayload);
         setSearchResults(resultPayload);
       })
-      .catch(() => {})
-      .finally(() => setIsLoading(false));
+      .catch((err) => {
+        if (err.name === "AbortError") return;
+      })
+      .finally(() => {
+        if (currentRequestId === requestIdRef.current) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
   }, [query, filter]);
 
   // Reset top image error state on result change

@@ -25,34 +25,35 @@ function SearchInputBar() {
   const urlQuery = searchParams.get("q") || "";
   const [searchQuery, setSearchQuery] = useState(urlQuery);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const isFocusedRef = useRef(false);
 
+  // Focus-aware sync: Only update input from URL if user is NOT actively typing/focused
   useEffect(() => {
-    setSearchQuery(urlQuery);
+    if (!isFocusedRef.current) {
+      setSearchQuery(urlQuery);
+    }
   }, [urlQuery]);
 
   const handleSearchChange = (val: string) => {
     setSearchQuery(val);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      if (val.trim()) {
-        router.replace(`/search?q=${encodeURIComponent(val.trim())}`);
-      } else {
-        router.replace(`/search`);
-      }
-    }, 200);
+      const targetUrl = val.trim() ? `/search?q=${encodeURIComponent(val.trim())}` : `/search`;
+      router.replace(targetUrl, { scroll: false });
+    }, 350);
   };
 
   const handleClear = () => {
     setSearchQuery("");
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    router.replace(`/search`);
+    router.replace(`/search`, { scroll: false });
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (searchQuery.trim()) {
-      router.push(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
+      router.replace(`/search?q=${encodeURIComponent(searchQuery.trim())}`, { scroll: false });
     }
   };
 
@@ -66,6 +67,16 @@ function SearchInputBar() {
         type="text"
         value={searchQuery}
         onChange={(e) => handleSearchChange(e.target.value)}
+        onFocus={() => {
+          isFocusedRef.current = true;
+        }}
+        onBlur={() => {
+          isFocusedRef.current = false;
+        }}
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        enterKeyHint="search"
         placeholder="What do you want to play?"
         className="w-full pl-9 md:pl-10 pr-8 md:pr-9 py-2 md:py-2.5 rounded-full bg-[#242424] hover:bg-[#2a2a2a] focus:bg-[#242424] text-xs md:text-sm text-white placeholder-[#b3b3b3] focus:outline-none focus:ring-2 focus:ring-white transition-all"
       />

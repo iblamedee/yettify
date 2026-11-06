@@ -86,4 +86,20 @@ test.describe("Search and Browse Discovery", () => {
     await expect(main.getByText("Krishnahazar").first()).toBeVisible();
     await expect(main.getByText("Various Artists")).toHaveCount(0);
   });
+
+  test("TC-SRCH-07: Rapid typing into search bar preserves full text without glitches or dropped letters", async ({ page }) => {
+    await page.goto("/search");
+    const searchInput = page.getByPlaceholder("What do you want to play?");
+    await expect(searchInput).toBeVisible();
+
+    // Focus and rapidly type a query character by character
+    await searchInput.click();
+    await searchInput.pressSequentially("birds of a feather", { delay: 50 });
+
+    // Assert that the full input string is retained without any swallowed or overwritten letters
+    await expect(searchInput).toHaveValue("birds of a feather");
+
+    // Wait for debounce and verify URL is updated smoothly
+    await page.waitForURL(/\/search\?q=birds%20of%20a%20feather/);
+  });
 });
