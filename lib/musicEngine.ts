@@ -206,9 +206,9 @@ export async function checkJioSaavnVerified(
         let titleMatches = false;
         if (normArtist) {
           titleMatches =
-            sNormTitle.includes(normTitle) ||
-            normTitle.includes(sNormTitle) ||
-            (normBaseTitle.length >= 3 && (sNormBaseTitle.includes(normBaseTitle) || normBaseTitle.includes(sNormBaseTitle)));
+            sNormTitle === normTitle ||
+            sNormBaseTitle === normBaseTitle ||
+            (normBaseTitle.length >= 4 && (sNormBaseTitle.startsWith(normBaseTitle) || normBaseTitle.startsWith(sNormBaseTitle)));
         } else {
           titleMatches = sNormTitle === normTitle || (normBaseTitle.length >= 3 && sNormBaseTitle === normBaseTitle);
         }
@@ -216,7 +216,7 @@ export async function checkJioSaavnVerified(
 
         // 3. Length ratio check (reject mashups and combined songs)
         const lengthRatio = sNormBaseTitle.length / Math.max(1, normBaseTitle.length);
-        if (lengthRatio > 1.4 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
+        if (lengthRatio > 1.3 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
           continue;
         }
 
@@ -235,10 +235,10 @@ export async function checkJioSaavnVerified(
           }
         }
 
-        // 5. Duration proximity check
+        // 5. Duration proximity check (strict +/-25s threshold)
         const sDuration = parseInt(song.duration || song.more_info?.duration || "0", 10);
         if (targetDuration && targetDuration > 0 && sDuration > 0) {
-          if (Math.abs(sDuration - targetDuration) > 40) {
+          if (Math.abs(sDuration - targetDuration) > 25) {
             continue;
           }
         }

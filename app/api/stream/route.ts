@@ -81,9 +81,9 @@ export async function GET(req: NextRequest) {
     }
 
     // 2. Studio-First query search resolution with strict validation & cover-filtering
-    // When title or q is present (even if ytId is also provided as a fallback hint),
-    // prioritize high-bitrate studio master from JioSaavn CDN (zero bot detection risk on cloud IPs)
-    if (q || title) {
+    // Prioritize high-bitrate studio master from JioSaavn CDN (zero bot detection risk on cloud IPs)
+    // ONLY when ytId is NOT specified. If a specific ytId was requested, do not hijack it.
+    if (!ytId && (q || title)) {
       let resolvedTitle = title || "";
       let resolvedArtist = artist || "";
 
@@ -237,72 +237,8 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // ⚡ Automatic Zero-Bot Studio Fallback Bridge:
-        // If direct YouTube stream extraction is blocked on cloud/datacenter IPs (e.g. BotGuard),
-        // resolve the 320kbps verified studio master from JioSaavn CDN (0% risk of bot detection)!
-        if (!resolvedUrl) {
-          try {
-            let searchTitle = title;
-            let searchArtist = artist;
-
-            // If title and artist were not provided in query params, fetch video metadata via yt-search (never blocked on Vercel)
-            if (!searchTitle) {
-              const yts = (await import("yt-search")).default;
-              const meta = await yts({ videoId: ytId });
-              if (meta && meta.title) {
-                const { stripTrackArtifacts } = await import("@/lib/musicEngine");
-                const clean = stripTrackArtifacts(meta.title) || meta.title;
-                const author = (meta.author?.name || "")
-                  .replace(/\s*-\s*Topic$/i, "")
-                  .replace(/VEVO$/i, "")
-                  .replace(/\s*Official$/i, "")
-                  .trim();
-
-                if (clean.includes(" - ")) {
-                  const parts = clean.split(" - ");
-                  searchArtist = author || parts[0].trim();
-                  searchTitle = parts.slice(1).join(" - ").trim();
-                } else {
-                  searchTitle = clean;
-                  searchArtist = author;
-                }
-              }
-            }
-
-            if (searchTitle) {
-              const studioRes = await resolveAudioForTrack(
-                searchTitle,
-                searchArtist || undefined,
-                "320"
-              );
-
-              if (studioRes?.audioUrl && studioRes.source === "jiosaavn") {
-                resolvedUrl = studioRes.audioUrl;
-                ytStreamCache.set(ytId, {
-                  url: studioRes.audioUrl,
-                  expires: Date.now() + 12 * 3600 * 1000,
-                });
-                ytNegativeCache.delete(ytId);
-
-                if (isJsonRequested) {
-                  const qualityInfo = resolveStreamQuality(resolvedUrl, "jiosaavn");
-                  return NextResponse.json({
-                    success: true,
-                    audioUrl: resolvedUrl,
-                    ytId,
-                    source: "jiosaavn",
-                    duration: studioRes.duration,
-                    bitrate: qualityInfo.bitrate,
-                    qualityTier: qualityInfo.tier,
-                  });
-                }
-                return NextResponse.redirect(resolvedUrl, 302);
-              }
-            }
-          } catch (bridgeErr: any) {
-            console.warn(`[Zero-Bot Bridge] Note for ${ytId}:`, bridgeErr.message);
-          }
-        }
+        // Note: Do NOT guess or substitute an unrelated song from JioSaavn when a specific
+        // ytId was requested. Substituting tracks across platforms leads to wrong music playing.
       }
 
       if (!resolvedUrl) {
@@ -311,12 +247,12 @@ export async function GET(req: NextRequest) {
 
         if (isJsonRequested) {
           return NextResponse.json(
-            { success: false, error: "Failed to resolve YouTube audio stream", ytId, source: "youtube" },
+            { success: false, error: "Failed to resolve YouTube audio stream on server", ytId, source: "youtube" },
             { status: 404 }
           );
         }
         return NextResponse.json(
-          { error: "Failed to resolve YouTube audio stream" },
+          { error: "Failed to resolve YouTube audio stream on server", ytId, source: "youtube" },
           { status: 404 }
         );
       }
