@@ -512,7 +512,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Background Network Error Recovery with Exponential Backoff (1s, 2s, 4s)
+  // Background Network Error Recovery with Exponential Backoff (1s, 2s) & Graceful Auto-Skip
   const onAudioError = () => {
     if (!currentTrack || !audioRef.current) return;
 
@@ -526,7 +526,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       failedYtIdsRef.current.add(currentTrack.ytId);
     }
 
-    if (retryCountRef.current < 3) {
+    if (retryCountRef.current < 2) {
       const delay = Math.pow(2, retryCountRef.current) * 1000;
       retryCountRef.current += 1;
 
@@ -542,7 +542,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         )
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => {
-            if (!data) return;
+            if (!data) {
+              nextTrack();
+              return;
+            }
             // Prioritize verified JioSaavn direct CDN URL
             let directUrl: string | null = null;
             if (data.source === "jiosaavn" && data.audioUrl?.startsWith("http")) {
@@ -560,10 +563,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
                 .play()
                 .then(() => setIsPlaying(true))
                 .catch(() => {});
+            } else {
+              // No playable stream found; cleanly advance to next song in queue
+              nextTrack();
             }
           })
-          .catch(() => {});
+          .catch(() => {
+            nextTrack();
+          });
       }, delay);
+    } else {
+      // Retries exhausted; gracefully advance to next song in queue without freezing
+      retryCountRef.current = 0;
+      nextTrack();
     }
   };
 

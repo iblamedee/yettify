@@ -753,20 +753,12 @@ export async function searchGlobalMusic(
     const saavnTracks = saavnSettled.status === "fulfilled" ? saavnSettled.value : [];
     const ytTracks = ytSettled.status === "fulfilled" ? ytSettled.value : [];
 
-    // Interleave and deduplicate results
+    // Prioritize direct studio CDN tracks (JioSaavn 320kbps & Spotify/Apple 100M+ catalog)
     const combined: GlobalTrack[] = [];
     const seenSignatures = new Set<string>();
 
-    const maxLen = Math.max(spotifyTracks.length, ytTracks.length, saavnTracks.length);
-    for (let i = 0; i < maxLen; i++) {
-      if (i < spotifyTracks.length) {
-        const t = spotifyTracks[i];
-        const sig = `${t.title.toLowerCase()}:::${t.artist.name.toLowerCase()}`;
-        if (!seenSignatures.has(sig)) {
-          seenSignatures.add(sig);
-          combined.push(t);
-        }
-      }
+    const studioMax = Math.max(saavnTracks.length, spotifyTracks.length);
+    for (let i = 0; i < studioMax; i++) {
       if (i < saavnTracks.length) {
         const t = saavnTracks[i];
         const sig = `${t.title.toLowerCase()}:::${t.artist.name.toLowerCase()}`;
@@ -775,13 +767,22 @@ export async function searchGlobalMusic(
           combined.push(t);
         }
       }
-      if (i < ytTracks.length) {
-        const t = ytTracks[i];
+      if (i < spotifyTracks.length) {
+        const t = spotifyTracks[i];
         const sig = `${t.title.toLowerCase()}:::${t.artist.name.toLowerCase()}`;
         if (!seenSignatures.has(sig)) {
           seenSignatures.add(sig);
           combined.push(t);
         }
+      }
+    }
+
+    // Append YouTube tracks after verified studio tracks to ensure zero-bot streaming for primary search
+    for (const t of ytTracks) {
+      const sig = `${t.title.toLowerCase()}:::${t.artist.name.toLowerCase()}`;
+      if (!seenSignatures.has(sig)) {
+        seenSignatures.add(sig);
+        combined.push(t);
       }
     }
 

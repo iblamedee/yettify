@@ -287,6 +287,58 @@ export async function GET(req: NextRequest) {
             // fallback error ignored
           }
         }
+
+        // ⚡ Automatic Zero-Bot Studio Fallback Bridge:
+        // If YouTube stream resolution is blocked on cloud/datacenter IPs,
+        // fetch the video's public title & artist via yt-search (which is never blocked on Vercel)
+        // and resolve the 320kbps studio master from JioSaavn CDN (0% risk of bot detection)!
+        if (!resolvedUrl) {
+          try {
+            const yts = (await import("yt-search")).default;
+            const meta = await yts({ videoId: ytId });
+            if (meta && meta.title) {
+              const { stripTrackArtifacts } = await import("@/lib/musicEngine");
+              const cleanTitle = stripTrackArtifacts(meta.title) || meta.title;
+              const authorName = (meta.author?.name || "")
+                .replace(/\s*-\s*Topic$/i, "")
+                .replace(/VEVO$/i, "")
+                .replace(/\s*Official$/i, "")
+                .trim();
+
+              const studioRes = await resolveAudioForTrack(
+                cleanTitle,
+                authorName || undefined,
+                "320",
+                meta.seconds || undefined
+              );
+
+              if (studioRes?.audioUrl && studioRes.source === "jiosaavn") {
+                resolvedUrl = studioRes.audioUrl;
+                ytStreamCache.set(ytId, {
+                  url: studioRes.audioUrl,
+                  expires: Date.now() + 12 * 3600 * 1000,
+                });
+                ytNegativeCache.delete(ytId);
+
+                if (isJsonRequested) {
+                  const qualityInfo = resolveStreamQuality(resolvedUrl, "jiosaavn");
+                  return NextResponse.json({
+                    success: true,
+                    audioUrl: resolvedUrl,
+                    ytId,
+                    source: "jiosaavn",
+                    duration: studioRes.duration || meta.seconds,
+                    bitrate: qualityInfo.bitrate,
+                    qualityTier: qualityInfo.tier,
+                  });
+                }
+                return NextResponse.redirect(resolvedUrl, 302);
+              }
+            }
+          } catch (bridgeErr: any) {
+            console.warn(`[Zero-Bot Bridge] Note for ${ytId}:`, bridgeErr.message);
+          }
+        }
       }
 
       if (!resolvedUrl) {
@@ -306,7 +358,15 @@ export async function GET(req: NextRequest) {
       }
 
       if (isJsonRequested) {
-        return NextResponse.json({ success: true, audioUrl: resolvedUrl, ytId, source: "youtube" });
+        const qualityInfo = resolveStreamQuality(resolvedUrl, "youtube");
+        return NextResponse.json({
+          success: true,
+          audioUrl: resolvedUrl,
+          ytId,
+          source: "youtube",
+          bitrate: qualityInfo.bitrate,
+          qualityTier: qualityInfo.tier,
+        });
       }
 
       // Always redirect to the resolved URL.
