@@ -235,10 +235,12 @@ export async function checkJioSaavnVerified(
           }
         }
 
-        // 5. Duration proximity check (strict +/-25s threshold)
+        // 5. Duration proximity check
         const sDuration = parseInt(song.duration || song.more_info?.duration || "0", 10);
         if (targetDuration && targetDuration > 0 && sDuration > 0) {
-          if (Math.abs(sDuration - targetDuration) > 25) {
+          const diff = Math.abs(sDuration - targetDuration);
+          const maxVariance = titleMatches && normArtist ? 60 : 35;
+          if (diff > maxVariance) {
             continue;
           }
         }
@@ -416,6 +418,27 @@ export async function resolveAudioForTrack(
     return saavnRes;
   }
 
+  // 1b. Fallback fuzzy search on JioSaavn for studio tracks before YouTube
+  try {
+    const cleanT = stripTrackArtifacts(title) || title;
+    const sq = [cleanT, artistName].filter(Boolean).join(" ");
+    const saavnSearch = await searchJioSaavn(sq, 4);
+    if (saavnSearch && saavnSearch.length > 0) {
+      const match = saavnSearch[0];
+      const normCand = cleanText(match.title);
+      if (normCand === normTitle || normCand.includes(normTitle) || normTitle.includes(normCand)) {
+        const res = {
+          source: "jiosaavn" as const,
+          audioUrl: match.audioUrl,
+          duration: match.duration,
+          coverUrl: match.album.coverUrl,
+        };
+        streamResolutionCache.set(cacheKey, res);
+        return res;
+      }
+    }
+  } catch {}
+
   // 2. High-precision scored YouTube stream resolution
   const ytRes = await resolveBestYouTubeAudio(title, artistName, targetDuration);
   if (ytRes) {
@@ -592,7 +615,7 @@ export async function searchYouTube(query: string, limit = 25): Promise<GlobalTr
         title: decodeHtml(title),
         duration: v.seconds || 180,
         streamCount: v.views || 1000000,
-        audioUrl: `/api/stream?ytId=${v.videoId}`,
+        audioUrl: `/api/stream?ytId=${v.videoId}&title=${encodeURIComponent(decodeHtml(title))}&artist=${encodeURIComponent(decodeHtml(artistName))}&duration=${v.seconds || 180}`,
         explicit: false,
         album: {
           id: safeAlbumId,
@@ -745,7 +768,7 @@ export async function searchGlobalMusic(
 
     const [spotifySettled, saavnSettled, ytSettled] = await Promise.allSettled([
       searchSpotifyCatalog(cleanQ, Math.ceil(limit * 0.7)),
-      searchJioSaavn(cleanQ, Math.ceil(limit * 0.4)),
+      searchJioSaavn(cleanQ, Math.min(25, Math.ceil(limit * 0.6))),
       ytPromise,
     ]);
 

@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useMemo,
 import { Track } from "@/types";
 import { QualityTier, resolveStreamQuality } from "@/lib/audioQuality";
 import { useLibrary } from "@/contexts/LibraryContext";
+import { useUI } from "@/contexts/UIContext";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -46,6 +47,7 @@ const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 const PlayerProgressContext = createContext<PlayerProgressContextType | undefined>(undefined);
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
+  const { showToast } = useUI();
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -232,8 +234,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       track.ytId = activeYtId;
       const qInfo = resolveStreamQuality(track.audioUrl || "", "youtube", audioQualityPref);
       setPlaybackQuality(qInfo.tier);
-      const streamUrl = `/api/stream?ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&redirect=true`;
+      const streamUrl = `/api/stream?ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&redirect=true`;
       playViaDirectAudio(streamUrl);
+
+      // Concurrently query metadata so player can switch to direct CDN URL for zero latency & seeking
+      fetch(`/api/stream?format=json&ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.audioUrl && data.audioUrl.startsWith("http") && !data.audioUrl.includes("/api/stream")) {
+            track.audioUrl = data.audioUrl;
+            if (data.source) track.source = data.source;
+            if (data.qualityTier) setPlaybackQuality(data.qualityTier);
+          } else if (data?.restricted) {
+            showToast("This video stream is restricted by YouTube on cloud servers.", "error");
+          }
+        })
+        .catch(() => {});
       return;
     }
 
@@ -531,6 +547,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             playViaDirectAudio(data.audioUrl);
           } else {
             setIsPlaying(false);
+            if (data?.restricted) {
+              showToast("This stream is restricted on cloud servers. Try a studio track.", "error");
+            }
           }
         })
         .catch(() => {
@@ -539,6 +558,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     } else {
       retryCountRef.current = 0;
       setIsPlaying(false);
+      showToast("Unable to play this track. Please select another song.", "error");
     }
   };
 
