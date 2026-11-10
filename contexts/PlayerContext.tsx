@@ -232,7 +232,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       track.ytId = ytMatch;
       const qInfo = resolveStreamQuality(track.audioUrl, "youtube", audioQualityPref);
       setPlaybackQuality(qInfo.tier);
-      playViaDirectAudio(`/api/stream?ytId=${encodeURIComponent(ytMatch)}&redirect=true`);
+      playViaDirectAudio(
+        `/api/stream?ytId=${encodeURIComponent(ytMatch)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&redirect=true`
+      );
       return;
     }
 
@@ -268,7 +270,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           playViaDirectAudio(data.audioUrl);
         } else if (data.ytId) {
           track.ytId = data.ytId;
-          const streamUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
+          const streamUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&redirect=true`;
           if (audioRef.current && audioRef.current.src !== streamUrl) {
             playViaDirectAudio(streamUrl);
           }
@@ -481,7 +483,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
                   next.audioUrl = data.audioUrl;
                 } else if (data?.ytId) {
                   next.ytId = data.ytId;
-                  next.audioUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
+                  next.audioUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&title=${encodeURIComponent(next.title)}&artist=${encodeURIComponent(next.artist?.name || "")}&redirect=true`;
                 } else if (data?.audioUrl) {
                   next.audioUrl = data.audioUrl;
                 }
@@ -551,7 +553,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             if (data.source === "jiosaavn" && data.audioUrl?.startsWith("http")) {
               directUrl = data.audioUrl;
             } else if (data.ytId && !failedYtIdsRef.current.has(data.ytId)) {
-              directUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
+              directUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&title=${encodeURIComponent(currentTrack.title)}&artist=${encodeURIComponent(currentTrack.artist?.name || "")}&redirect=true`;
             } else if (data.audioUrl?.startsWith("http")) {
               directUrl = data.audioUrl;
             }

@@ -123,13 +123,11 @@ export async function GET(req: Request) {
 
       globalTracks.forEach((gt) => {
         const lowerName = gt.artist.name.toLowerCase();
-        const lowerTitle = gt.title.toLowerCase();
         if (
           lowerName !== "various artists" &&
           lowerName !== "youtube music" &&
-          lowerName !== lowerTitle &&
           !artistMap.has(lowerName) &&
-          artists.length < 12
+          artists.length < 15
         ) {
           const synthesizedArtist = {
             id: gt.artist.id,
@@ -143,23 +141,40 @@ export async function GET(req: Request) {
           artists.push(synthesizedArtist);
         }
       });
+
+      // Sort tracks: prioritize tracks performed by an artist matching the query
+      const lowerQuery = query.toLowerCase();
+      tracks.sort((a, b) => {
+        const aArtistMatch = a.artist?.name?.toLowerCase() === lowerQuery ? 2 : a.artist?.name?.toLowerCase().includes(lowerQuery) ? 1 : 0;
+        const bArtistMatch = b.artist?.name?.toLowerCase() === lowerQuery ? 2 : b.artist?.name?.toLowerCase().includes(lowerQuery) ? 1 : 0;
+        if (aArtistMatch !== bArtistMatch) return bArtistMatch - aArtistMatch;
+
+        const aTitleMatch = a.title?.toLowerCase() === lowerQuery ? 2 : a.title?.toLowerCase().includes(lowerQuery) ? 1 : 0;
+        const bTitleMatch = b.title?.toLowerCase() === lowerQuery ? 2 : b.title?.toLowerCase().includes(lowerQuery) ? 1 : 0;
+        return bTitleMatch - aTitleMatch;
+      });
     } catch (err) {
       console.error("Global music search enrichment error:", err);
     }
 
-    // 3. Determine Top Result: prioritize exact artist match, exact track match, then top track
+    // 3. Determine Top Result: prioritize exact artist match (DB or global), exact track match, then top track
     let topResult: any = null;
-    const exactDbArtist = dbArtists.find((a) => a.name.toLowerCase() === query.toLowerCase());
-    const exactTrack = tracks.find((t) => t.title.toLowerCase() === query.toLowerCase());
+    const lowerQ = query.toLowerCase();
+    const exactDbArtist = dbArtists.find((a) => a.name.toLowerCase() === lowerQ);
+    const exactGlobalArtist = artists.find((a) => a.name.toLowerCase() === lowerQ);
+    const exactTrack = tracks.find((t) => t.title.toLowerCase() === lowerQ);
+    const partialArtist = artists.find((a) => a.name.toLowerCase().includes(lowerQ) || lowerQ.includes(a.name.toLowerCase()));
 
     if (exactDbArtist) {
       topResult = { ...exactDbArtist, resultType: "artist" };
+    } else if (exactGlobalArtist) {
+      topResult = { ...exactGlobalArtist, resultType: "artist" };
+    } else if (exactTrack && (!partialArtist || exactTrack.artist?.name?.toLowerCase() === lowerQ)) {
+      topResult = { ...exactTrack, resultType: "track" };
+    } else if (partialArtist) {
+      topResult = { ...partialArtist, resultType: "artist" };
     } else if (exactTrack) {
       topResult = { ...exactTrack, resultType: "track" };
-    } else if (artists.length > 0 && artists[0].name.toLowerCase() === query.toLowerCase()) {
-      topResult = { ...artists[0], resultType: "artist" };
-    } else if (artists.length > 0 && query.toLowerCase().includes(artists[0].name.toLowerCase())) {
-      topResult = { ...artists[0], resultType: "artist" };
     } else if (tracks.length > 0) {
       topResult = { ...tracks[0], resultType: "track" };
     } else if (artists.length > 0) {

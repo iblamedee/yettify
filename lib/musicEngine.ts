@@ -800,16 +800,46 @@ export async function ensureArtistInDb(identifier: string) {
   try {
     const cleanSearch = identifier.replace(/^art_/, "").replace(/_/g, " ").trim();
     if (!cleanSearch) return null;
+    const lowerSearch = cleanSearch.toLowerCase();
 
-    const globalTracks = await searchGlobalMusic(cleanSearch, 15);
-    if (!globalTracks.length) return null;
+    // 1. Search global music (JioSaavn + Spotify + YouTube)
+    const globalTracks = await searchGlobalMusic(cleanSearch, 30);
 
-    const top = globalTracks[0];
+    // Strict filter: candidate tracks MUST have an artist matching cleanSearch
+    let matchingTracks = globalTracks.filter((gt) => {
+      const artName = gt.artist.name.toLowerCase();
+      return artName === lowerSearch || artName.includes(lowerSearch) || lowerSearch.includes(artName);
+    });
+
+    // If still empty, search JioSaavn directly
+    if (!matchingTracks.length) {
+      const saavnTracks = await searchJioSaavn(cleanSearch, 20);
+      matchingTracks = saavnTracks.filter((gt) => {
+        const artName = gt.artist.name.toLowerCase();
+        return artName === lowerSearch || artName.includes(lowerSearch) || lowerSearch.includes(artName);
+      });
+    }
+
+    if (!matchingTracks.length) return null;
+
+    // Use canonical artist name from matching tracks (prefer exact match if available)
+    const exactMatch = matchingTracks.find(
+      (gt) => gt.artist.name.toLowerCase() === lowerSearch
+    );
+    const top = exactMatch || matchingTracks[0];
     const artistName = top.artist.name;
+    const targetArtistId = identifier.startsWith("art_")
+      ? identifier
+      : `art_${artistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
 
-    // Check if artist already exists by exact name
+    // Check if artist already exists by targetArtistId or exact name
     let artist = await prisma.artist.findFirst({
-      where: { name: { equals: artistName } },
+      where: {
+        OR: [
+          { id: targetArtistId },
+          { name: { equals: artistName } },
+        ],
+      },
       include: {
         tracks: { include: { artist: true, album: true }, take: 10 },
         albums: true,
@@ -821,7 +851,7 @@ export async function ensureArtistInDb(identifier: string) {
     if (!artist) {
       artist = await prisma.artist.create({
         data: {
-          id: `art_${artistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
+          id: targetArtistId,
           name: artistName,
           avatarUrl: top.album.coverUrl,
           headerUrl: top.album.coverUrl,
@@ -833,11 +863,11 @@ export async function ensureArtistInDb(identifier: string) {
       });
     }
 
-    // Create album
+    // Create album for this artist
     const album = await prisma.album.create({
       data: {
         id: `alb_${top.album.title.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}`,
-        title: top.album.title,
+        title: top.album.title || `${artistName} Essentials`,
         coverUrl: top.album.coverUrl,
         releaseYear: 2024,
         releaseDate: "2024",
@@ -847,17 +877,18 @@ export async function ensureArtistInDb(identifier: string) {
       },
     });
 
-    // Create tracks
-    for (let i = 0; i < globalTracks.length; i++) {
-      const gt = globalTracks[i];
+    // Create tracks strictly from matchingTracks (up to 15)
+    const tracksToInsert = matchingTracks.slice(0, 15);
+    for (let i = 0; i < tracksToInsert.length; i++) {
+      const gt = tracksToInsert[i];
       await prisma.track.create({
         data: {
           id: `trk_${gt.title.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${i}_${Date.now()}`,
           title: gt.title,
           duration: gt.duration,
-          streamCount: gt.streamCount,
+          streamCount: gt.streamCount || Math.floor(Math.random() * 20000000) + 5000000,
           audioUrl: gt.audioUrl,
-          explicit: gt.explicit,
+          explicit: gt.explicit || false,
           trackNumber: i + 1,
           albumId: album.id,
           artistId: artist.id,

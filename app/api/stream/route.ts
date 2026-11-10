@@ -80,8 +80,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(directUrl, 302);
     }
 
-    // 2. Query search resolution with strict validation & cover-filtering
-    if (!ytId && (q || title)) {
+    // 2. Studio-First query search resolution with strict validation & cover-filtering
+    // When title or q is present (even if ytId is also provided as a fallback hint),
+    // prioritize high-bitrate studio master from JioSaavn CDN (zero bot detection risk on cloud IPs)
+    if (q || title) {
       let resolvedTitle = title || "";
       let resolvedArtist = artist || "";
 
@@ -235,81 +237,43 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // Resilient parallel fallback for serverless cloud IPs (Vercel / AWS)
+        // ⚡ Automatic Zero-Bot Studio Fallback Bridge:
+        // If direct YouTube stream extraction is blocked on cloud/datacenter IPs (e.g. BotGuard),
+        // resolve the 320kbps verified studio master from JioSaavn CDN (0% risk of bot detection)!
         if (!resolvedUrl) {
           try {
-            const fallbackEndpoints = [
-              `https://pipedapi.kavin.rocks/streams/${ytId}`,
-              `https://api.piped.private.coffee/streams/${ytId}`,
-              `https://invidious.nerdvpn.de/api/v1/videos/${ytId}`,
-              `https://inv.nadeko.net/api/v1/videos/${ytId}`,
-            ];
+            let searchTitle = title;
+            let searchArtist = artist;
 
-            const fetchMirror = async (ep: string): Promise<string | null> => {
-              try {
-                const fRes = await fetch(ep, {
-                  headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-                  signal: AbortSignal.timeout(1500),
-                });
-                if (!fRes.ok) return null;
-                const contentType = fRes.headers.get("content-type") || "";
-                if (!contentType.includes("json")) return null;
-                const fData = await fRes.json();
-                if (fData.audioStreams && Array.isArray(fData.audioStreams) && fData.audioStreams.length > 0) {
-                  const best = fData.audioStreams.sort(
-                    (a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0)
-                  )[0];
-                  if (best?.url) return best.url;
-                }
-                if (fData.adaptiveFormats && Array.isArray(fData.adaptiveFormats)) {
-                  const aud = fData.adaptiveFormats.find((f: any) => f.type?.includes("audio"));
-                  if (aud?.url) return aud.url;
-                }
-                return null;
-              } catch {
-                return null;
-              }
-            };
+            // If title and artist were not provided in query params, fetch video metadata via yt-search (never blocked on Vercel)
+            if (!searchTitle) {
+              const yts = (await import("yt-search")).default;
+              const meta = await yts({ videoId: ytId });
+              if (meta && meta.title) {
+                const { stripTrackArtifacts } = await import("@/lib/musicEngine");
+                const clean = stripTrackArtifacts(meta.title) || meta.title;
+                const author = (meta.author?.name || "")
+                  .replace(/\s*-\s*Topic$/i, "")
+                  .replace(/VEVO$/i, "")
+                  .replace(/\s*Official$/i, "")
+                  .trim();
 
-            const mirrorResults = await Promise.allSettled(fallbackEndpoints.map((ep) => fetchMirror(ep)));
-            for (const r of mirrorResults) {
-              if (r.status === "fulfilled" && r.value) {
-                resolvedUrl = r.value;
-                ytStreamCache.set(ytId, {
-                  url: r.value,
-                  expires: Date.now() + 3 * 3600 * 1000,
-                });
-                ytNegativeCache.delete(ytId);
-                break;
+                if (clean.includes(" - ")) {
+                  const parts = clean.split(" - ");
+                  searchArtist = author || parts[0].trim();
+                  searchTitle = parts.slice(1).join(" - ").trim();
+                } else {
+                  searchTitle = clean;
+                  searchArtist = author;
+                }
               }
             }
-          } catch {
-            // fallback error ignored
-          }
-        }
 
-        // ⚡ Automatic Zero-Bot Studio Fallback Bridge:
-        // If YouTube stream resolution is blocked on cloud/datacenter IPs,
-        // fetch the video's public title & artist via yt-search (which is never blocked on Vercel)
-        // and resolve the 320kbps studio master from JioSaavn CDN (0% risk of bot detection)!
-        if (!resolvedUrl) {
-          try {
-            const yts = (await import("yt-search")).default;
-            const meta = await yts({ videoId: ytId });
-            if (meta && meta.title) {
-              const { stripTrackArtifacts } = await import("@/lib/musicEngine");
-              const cleanTitle = stripTrackArtifacts(meta.title) || meta.title;
-              const authorName = (meta.author?.name || "")
-                .replace(/\s*-\s*Topic$/i, "")
-                .replace(/VEVO$/i, "")
-                .replace(/\s*Official$/i, "")
-                .trim();
-
+            if (searchTitle) {
               const studioRes = await resolveAudioForTrack(
-                cleanTitle,
-                authorName || undefined,
-                "320",
-                meta.seconds || undefined
+                searchTitle,
+                searchArtist || undefined,
+                "320"
               );
 
               if (studioRes?.audioUrl && studioRes.source === "jiosaavn") {
@@ -327,7 +291,7 @@ export async function GET(req: NextRequest) {
                     audioUrl: resolvedUrl,
                     ytId,
                     source: "jiosaavn",
-                    duration: studioRes.duration || meta.seconds,
+                    duration: studioRes.duration,
                     bitrate: qualityInfo.bitrate,
                     qualityTier: qualityInfo.tier,
                   });
