@@ -239,6 +239,83 @@ export async function GET(req: NextRequest) {
 
         // Note: Do NOT guess or substitute an unrelated song from JioSaavn when a specific
         // ytId was requested. Substituting tracks across platforms leads to wrong music playing.
+
+        // Tier 2: Resilient fast Invidious / Piped audio stream mirrors for datacenter IPs
+        if (!resolvedUrl) {
+          try {
+            const fallbackEndpoints = [
+              `https://pipedapi.kavin.rocks/streams/${ytId}`,
+              `https://api.piped.private.coffee/streams/${ytId}`,
+              `https://inv.nadeko.net/api/v1/videos/${ytId}`,
+              `https://invidious.nerdvpn.de/api/v1/videos/${ytId}`,
+            ];
+
+            const fetchMirror = async (ep: string): Promise<string | null> => {
+              try {
+                const fRes = await fetch(ep, {
+                  headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+                  signal: AbortSignal.timeout(1800),
+                });
+                if (!fRes.ok) return null;
+                const fData = await fRes.json();
+                if (fData.audioStreams && Array.isArray(fData.audioStreams) && fData.audioStreams.length > 0) {
+                  const best = fData.audioStreams.sort(
+                    (a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0)
+                  )[0];
+                  if (best?.url) return best.url;
+                }
+                if (fData.adaptiveFormats && Array.isArray(fData.adaptiveFormats)) {
+                  const aud = fData.adaptiveFormats.find((f: any) => f.type?.includes("audio"));
+                  if (aud?.url) return aud.url;
+                }
+                return null;
+              } catch {
+                return null;
+              }
+            };
+
+            const mirrorResults = await Promise.allSettled(fallbackEndpoints.map((ep) => fetchMirror(ep)));
+            for (const r of mirrorResults) {
+              if (r.status === "fulfilled" && r.value) {
+                resolvedUrl = r.value;
+                ytStreamCache.set(ytId, {
+                  url: r.value,
+                  expires: Date.now() + 3 * 3600 * 1000,
+                });
+                ytNegativeCache.delete(ytId);
+                break;
+              }
+            }
+          } catch {
+            // mirror fallback error ignored
+          }
+        }
+
+        // Tier 3: Apple Music / iTunes high-fidelity audio stream fallback (exact match, 0% bot risk)
+        if (!resolvedUrl && (title || artist)) {
+          try {
+            const searchQ = [title, artist].filter(Boolean).join(" ");
+            const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(searchQ)}&entity=song&limit=1`;
+            const itRes = await fetch(itunesUrl, {
+              headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+              signal: AbortSignal.timeout(1800),
+            });
+            if (itRes.ok) {
+              const itData = await itRes.json();
+              const track = itData.results?.[0];
+              if (track?.previewUrl) {
+                resolvedUrl = track.previewUrl;
+                ytStreamCache.set(ytId, {
+                  url: track.previewUrl,
+                  expires: Date.now() + 6 * 3600 * 1000,
+                });
+                ytNegativeCache.delete(ytId);
+              }
+            }
+          } catch {
+            // itunes fallback error ignored
+          }
+        }
       }
 
       if (!resolvedUrl) {

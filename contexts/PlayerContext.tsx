@@ -71,79 +71,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const prefetchedTrackIdRef = useRef<string | null>(null);
-  const ytPlayerRef = useRef<any>(null);
-  const ytPlayerReadyRef = useRef<boolean>(false);
-  const activeSourceRef = useRef<"audio" | "youtube">("audio");
   const isPlayingRef = useRef<boolean>(isPlaying);
   const retryCountRef = useRef<number>(0);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastPositionStateUpdateRef = useRef<number>(0);
-  const failedYtIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
-
-  // Initialize official YouTube Iframe Player in background for zero-bot client playback
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const initYT = () => {
-      if ((window as any).YT && (window as any).YT.Player && !ytPlayerRef.current) {
-        try {
-          ytPlayerRef.current = new (window as any).YT.Player("yt-player-element", {
-            height: "1",
-            width: "1",
-            playerVars: {
-              autoplay: 1,
-              controls: 0,
-              disablekb: 1,
-              fs: 0,
-              rel: 0,
-              playsinline: 1,
-            },
-            events: {
-              onReady: (event: any) => {
-                ytPlayerReadyRef.current = true;
-                try {
-                  event.target.setVolume(isMuted ? 0 : Math.round(volume * 100));
-                } catch {}
-              },
-              onStateChange: (event: any) => {
-                if (activeSourceRef.current === "youtube") {
-                  // 1 = playing, 2 = paused, 0 = ended
-                  if (event.data === 1) {
-                    setIsPlaying(true);
-                    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
-                  } else if (event.data === 2) {
-                    setIsPlaying(false);
-                    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
-                  } else if (event.data === 0) {
-                    onEnded();
-                  }
-                }
-              },
-              onError: () => {
-                setIsPlaying(false);
-              },
-            },
-          });
-        } catch (e) {
-          console.warn("YouTube iframe player init:", e);
-        }
-      }
-    };
-
-    if (!(window as any).YT) {
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      const firstScriptTag = document.getElementsByTagName("script")[0];
-      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
-      (window as any).onYouTubeIframeAPIReady = initYT;
-    } else {
-      initYT();
-    }
-  }, []);
 
   // Restore player state from localStorage on initial load
   useEffect(() => {
@@ -185,20 +120,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Sync volume with HTML5 audio element and YouTube player
+  // Sync volume with HTML5 audio element
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = isMuted ? 0 : volume;
-    }
-    if (ytPlayerRef.current) {
-      try {
-        if (isMuted) {
-          ytPlayerRef.current.mute?.();
-        } else {
-          ytPlayerRef.current.unMute?.();
-          ytPlayerRef.current.setVolume?.(Math.round(volume * 100));
-        }
-      } catch {}
     }
   }, [volume, isMuted]);
 
@@ -226,25 +151,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Poll current time when YouTube is actively playing
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isPlaying && activeSourceRef.current === "youtube") {
-      interval = setInterval(() => {
-        if (ytPlayerRef.current?.getCurrentTime) {
-          try {
-            const cur = ytPlayerRef.current.getCurrentTime() || 0;
-            const dur = ytPlayerRef.current.getDuration() || currentTrack?.duration || 0;
-            setCurrentTime(cur);
-            if (dur > 0) setDuration(dur);
-            updateMediaSessionPositionState(cur, dur);
-          } catch {}
-        }
-      }, 500);
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, currentTrack, updateMediaSessionPositionState]);
-
   // Sync MediaSession playbackState
   useEffect(() => {
     if (typeof window !== "undefined" && "mediaSession" in navigator) {
@@ -252,47 +158,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isPlaying]);
 
-  // Client-side zero-bot YouTube player
-  const playViaYouTube = (ytId: string) => {
-    activeSourceRef.current = "youtube";
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
-
-    const tryPlay = () => {
-      if (ytPlayerRef.current && ytPlayerReadyRef.current) {
-        try {
-          ytPlayerRef.current.loadVideoById(ytId);
-          ytPlayerRef.current.playVideo();
-          setIsPlaying(true);
-          if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
-        } catch {
-          setIsPlaying(true);
-        }
-      }
-    };
-
-    if (ytPlayerReadyRef.current) {
-      tryPlay();
-    } else {
-      const checkInterval = setInterval(() => {
-        if (ytPlayerReadyRef.current) {
-          clearInterval(checkInterval);
-          tryPlay();
-        }
-      }, 100);
-      setTimeout(() => clearInterval(checkInterval), 5000);
-    }
-  };
-
   // Play audio directly through native HTML5 audio element
   const playViaDirectAudio = (url: string) => {
-    activeSourceRef.current = "audio";
-    if (ytPlayerRef.current?.pauseVideo) {
-      try {
-        ytPlayerRef.current.pauseVideo();
-      } catch {}
-    }
     if (!audioRef.current) return;
     if (audioRef.current.src !== url) {
       audioRef.current.src = url;
@@ -358,18 +225,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // 2. Direct YouTube ID (streamed via zero-bot client-side YouTube player)
+    // 2. Direct YouTube ID (streamed natively through resilient /api/stream audio proxy)
     const ytMatch = track.ytId || track.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
     if (ytMatch || track.source === "youtube") {
       const activeYtId = ytMatch || track.ytId || track.id.replace(/^yt_/, "");
       track.ytId = activeYtId;
       const qInfo = resolveStreamQuality(track.audioUrl || "", "youtube", audioQualityPref);
       setPlaybackQuality(qInfo.tier);
-      playViaYouTube(activeYtId);
+      const streamUrl = `/api/stream?ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&redirect=true`;
+      playViaDirectAudio(streamUrl);
       return;
     }
 
-    // 3. Resolve stream on demand via /api/stream
+    // 3. Resolve stream on demand with immediate direct streaming fallback
+    const directFallbackUrl = track.audioUrl?.startsWith("/api/stream")
+      ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}redirect=true`
+      : `/api/stream?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&redirect=true`;
+
+    playViaDirectAudio(directFallbackUrl);
+
+    // Concurrently fetch stream metadata and direct CDN source for quality resolution
     const queryUrl = track.audioUrl?.startsWith("/api/stream")
       ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json&bitrate=${prefBitrate}`
       : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`;
@@ -387,43 +262,24 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         if (data.source === "jiosaavn" && data.audioUrl && data.audioUrl.startsWith("http")) {
           track.audioUrl = data.audioUrl;
           playViaDirectAudio(data.audioUrl);
-        } else if (data.ytId || data.source === "youtube") {
-          const resolvedYtId = data.ytId || data.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
-          if (resolvedYtId) {
-            track.ytId = resolvedYtId;
-            playViaYouTube(resolvedYtId);
-          }
         } else if (data.audioUrl && data.audioUrl.startsWith("http")) {
           track.audioUrl = data.audioUrl;
           playViaDirectAudio(data.audioUrl);
+        } else if (data.ytId) {
+          track.ytId = data.ytId;
+          const streamUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&redirect=true`;
+          if (audioRef.current && audioRef.current.src !== streamUrl) {
+            playViaDirectAudio(streamUrl);
+          }
         }
       })
       .catch(() => {
-        setIsPlaying(false);
+        setIsPlaying(true);
       });
   };
 
   const togglePlayPause = () => {
-    if (!currentTrack) return;
-
-    if (activeSourceRef.current === "youtube") {
-      if (isPlayingRef.current) {
-        try {
-          ytPlayerRef.current?.pauseVideo?.();
-        } catch {}
-        setIsPlaying(false);
-        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
-      } else {
-        try {
-          ytPlayerRef.current?.playVideo?.();
-        } catch {}
-        setIsPlaying(true);
-        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
-      }
-      return;
-    }
-
-    if (!audioRef.current) return;
+    if (!currentTrack || !audioRef.current) return;
 
     if (isPlayingRef.current) {
       audioRef.current.pause();
@@ -442,11 +298,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const seekTo = (seconds: number) => {
     const clamped = Math.max(0, Math.min(duration || 9999, seconds));
-    if (activeSourceRef.current === "youtube") {
-      try {
-        ytPlayerRef.current?.seekTo?.(clamped, true);
-      } catch {}
-    } else if (audioRef.current) {
+    if (audioRef.current) {
       audioRef.current.currentTime = clamped;
     }
     setCurrentTime(clamped);
@@ -659,19 +511,35 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Clean Error Handling: Hand off to client-side YouTube player if applicable, or halt cleanly without random skipping
+  // Dynamic Stream Self-Healing: If an audio URL expires or fails, recover a fresh stream dynamically
   const onAudioError = () => {
     if (!currentTrack || !audioRef.current) return;
 
-    // If native audio failed on a YouTube track, seamlessly fallback to client-side YouTube player
-    const ytId = currentTrack.ytId || currentTrack.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
-    if (ytId && activeSourceRef.current !== "youtube") {
-      playViaYouTube(ytId);
-      return;
-    }
+    if (retryCountRef.current < 2) {
+      retryCountRef.current += 1;
+      let prefBitrate: "96" | "160" | "320" = "320";
+      if (audioQualityPref === "LOW") prefBitrate = "96";
+      else if (audioQualityPref === "NORMAL") prefBitrate = "160";
 
-    console.warn("Audio playback error for track:", currentTrack.title);
-    setIsPlaying(false);
+      fetch(
+        `/api/stream?format=json&title=${encodeURIComponent(currentTrack.title)}&artist=${encodeURIComponent(currentTrack.artist?.name || "")}&duration=${currentTrack.duration || 0}&bitrate=${prefBitrate}`
+      )
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.audioUrl && audioRef.current) {
+            currentTrack.audioUrl = data.audioUrl;
+            playViaDirectAudio(data.audioUrl);
+          } else {
+            setIsPlaying(false);
+          }
+        })
+        .catch(() => {
+          setIsPlaying(false);
+        });
+    } else {
+      retryCountRef.current = 0;
+      setIsPlaying(false);
+    }
   };
 
   // Handle MediaSession metadata & action handlers for Mobile Lockscreen / Notification Shade
@@ -892,20 +760,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           preload="auto"
           playsInline
         />
-        <div
-          id="yt-player-container"
-          style={{
-            position: "fixed",
-            top: "-9999px",
-            left: "-9999px",
-            width: "1px",
-            height: "1px",
-            opacity: 0,
-            pointerEvents: "none",
-          }}
-        >
-          <div id="yt-player-element" />
-        </div>
         {children}
       </PlayerProgressContext.Provider>
     </PlayerContext.Provider>
