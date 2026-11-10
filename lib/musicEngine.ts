@@ -96,6 +96,19 @@ export function cleanText(str?: string | null): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+/**
+ * Strips noise, bracketed tags, and suffixes (e.g. "feat.", "Official Video", "- Single")
+ * to improve search indexing and exact catalog matching.
+ */
+export function stripTrackArtifacts(title?: string | null): string {
+  if (!title) return "";
+  return title
+    .replace(/\s*[\(\[](?:feat\.|featuring|with|prod\.|official|audio|video|remaster(?:ed)?|deluxe|version|edition|single|bonus|extended|mix|visualizer|hq|hd|4k)[^\)\]]*[\)\]]/gi, "")
+    .replace(/\s*-\s*(?:feat\.|featuring|with|prod\.|official|audio|video|remaster(?:ed)?|deluxe|version|edition|single|bonus|extended|mix|visualizer).*/gi, "")
+    .replace(/\s*-\s*Single$/i, "")
+    .trim();
+}
+
 const FORBIDDEN_COVER_KEYWORDS = [
   "cover",
   "karaoke",
@@ -137,103 +150,115 @@ export async function checkJioSaavnVerified(
   targetDuration?: number,
   bitrate: "96" | "160" | "320" = "320"
 ): Promise<{ audioUrl: string; duration?: number; lyrics?: string; coverUrl?: string; source: string } | null> {
-  const query = [title, artistName].filter(Boolean).join(" ");
+  const cleanTitle = stripTrackArtifacts(title) || title;
+  const queries = [
+    [cleanTitle, artistName].filter(Boolean).join(" "),
+    [title, artistName].filter(Boolean).join(" "),
+  ];
+  const uniqueQueries = Array.from(new Set(queries.filter(Boolean)));
   const normTitle = cleanText(title);
+  const normBaseTitle = cleanText(cleanTitle);
   const normArtist = cleanText(artistName);
 
-  try {
-    const searchUrl = `https://www.jiosaavn.com/api.php?__call=search.getResults&_marker=0&api_version=4&_format=json&p=1&n=8&q=${encodeURIComponent(query)}`;
-    const res = await fetch(searchUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-    });
+  for (const q of uniqueQueries) {
+    try {
+      const searchUrl = `https://www.jiosaavn.com/api.php?__call=search.getResults&_marker=0&api_version=4&_format=json&p=1&n=10&q=${encodeURIComponent(q)}`;
+      const res = await fetch(searchUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
 
-    if (!res.ok) return null;
-    const data = await res.json();
-    const results = data.results || [];
+      if (!res.ok) continue;
+      const data = await res.json();
+      const results = data.results || [];
 
-    for (const song of results) {
-      const sTitle = song.title || song.song || "";
-      const sAlbum = song.album || song.more_info?.album || "";
-      const primaryArtistObjs = song.more_info?.artistMap?.primary_artists || [];
-      const primaryArtistNames = Array.isArray(primaryArtistObjs) ? primaryArtistObjs.map((a: any) => a.name) : [];
+      for (const song of results) {
+        const sTitle = song.title || song.song || "";
+        const sAlbum = song.album || song.more_info?.album || "";
+        const primaryArtistObjs = song.more_info?.artistMap?.primary_artists || [];
+        const primaryArtistNames = Array.isArray(primaryArtistObjs) ? primaryArtistObjs.map((a: any) => a.name) : [];
 
-      const artistList = [
-        ...primaryArtistNames,
-        song.primary_artists,
-        song.singers,
-        song.more_info?.music,
-        ...(song.more_info?.artistMap?.artists?.map((a: any) => a.name) || []),
-      ].filter(Boolean);
-      const sArtists = artistList.join(" ");
+        const artistList = [
+          ...primaryArtistNames,
+          song.primary_artists,
+          song.singers,
+          song.more_info?.music,
+          ...(song.more_info?.artistMap?.artists?.map((a: any) => a.name) || []),
+        ].filter(Boolean);
+        const sArtists = artistList.join(" ");
 
-      const sNormTitle = cleanText(sTitle);
-      const sNormArtists = cleanText(sArtists);
+        const sNormTitle = cleanText(sTitle);
+        const sNormBaseTitle = cleanText(stripTrackArtifacts(sTitle));
+        const sNormArtists = cleanText(sArtists);
 
-      // 1. Forbidden covers, karaoke, and tribute check
-      const fullContent = `${sTitle} ${sAlbum} ${sArtists}`.toLowerCase();
-      const hasCoverKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) => fullContent.includes(kw));
-      const requestedHasKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) =>
-        `${title} ${artistName || ""}`.toLowerCase().includes(kw)
-      );
-      if (hasCoverKeyword && !requestedHasKeyword) {
-        continue;
-      }
-
-      // 2. Title matching
-      let titleMatches = false;
-      if (normArtist) {
-        titleMatches = sNormTitle.includes(normTitle) || normTitle.includes(sNormTitle);
-      } else {
-        titleMatches = sNormTitle === normTitle;
-      }
-      if (!titleMatches) continue;
-
-      // 3. Length ratio check (reject mashups and combined songs)
-      const lengthRatio = sNormTitle.length / Math.max(1, normTitle.length);
-      if (lengthRatio > 1.35 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
-        continue;
-      }
-
-      // 4. Strict Artist Matching: Ensure the primary artist strictly matches
-      if (normArtist) {
-        const primaryNorms = primaryArtistNames.map((n: string) => cleanText(n));
-        const matchedPrimary = primaryNorms.some(
-          (pn: string) => pn.includes(normArtist) || normArtist.includes(pn)
+        // 1. Forbidden covers, karaoke, and tribute check
+        const fullContent = `${sTitle} ${sAlbum} ${sArtists}`.toLowerCase();
+        const hasCoverKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) => fullContent.includes(kw));
+        const requestedHasKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) =>
+          `${title} ${artistName || ""}`.toLowerCase().includes(kw)
         );
-        const matchedAny =
-          normArtist.length >= 4 &&
-          (sNormArtists.includes(normArtist) || normArtist.includes(sNormArtists));
-
-        if (!matchedPrimary && !matchedAny) {
-          continue; // REJECT if artist does not match
-        }
-      }
-
-      // 5. Duration proximity check
-      const sDuration = parseInt(song.duration || song.more_info?.duration || "0", 10);
-      if (targetDuration && targetDuration > 0 && sDuration > 0) {
-        if (Math.abs(sDuration - targetDuration) > 40) {
+        if (hasCoverKeyword && !requestedHasKeyword) {
           continue;
         }
-      }
 
-      const encUrl = song.encrypted_media_url || song.more_info?.encrypted_media_url;
-      const audioUrl = decryptSaavnUrl(encUrl, bitrate);
-      if (audioUrl) {
-        const rawImg = song.image || "";
-        const coverUrl = rawImg ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg") : undefined;
-        return {
-          source: "jiosaavn",
-          audioUrl,
-          duration: isNaN(sDuration) ? 210 : sDuration,
-          coverUrl,
-        };
+        // 2. Title matching against full title or base stripped title
+        let titleMatches = false;
+        if (normArtist) {
+          titleMatches =
+            sNormTitle.includes(normTitle) ||
+            normTitle.includes(sNormTitle) ||
+            (normBaseTitle.length >= 3 && (sNormBaseTitle.includes(normBaseTitle) || normBaseTitle.includes(sNormBaseTitle)));
+        } else {
+          titleMatches = sNormTitle === normTitle || (normBaseTitle.length >= 3 && sNormBaseTitle === normBaseTitle);
+        }
+        if (!titleMatches) continue;
+
+        // 3. Length ratio check (reject mashups and combined songs)
+        const lengthRatio = sNormBaseTitle.length / Math.max(1, normBaseTitle.length);
+        if (lengthRatio > 1.4 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
+          continue;
+        }
+
+        // 4. Strict Artist Matching: Ensure the primary artist strictly matches
+        if (normArtist) {
+          const primaryNorms = primaryArtistNames.map((n: string) => cleanText(n));
+          const matchedPrimary = primaryNorms.some(
+            (pn: string) => pn.includes(normArtist) || normArtist.includes(pn)
+          );
+          const matchedAny =
+            normArtist.length >= 3 &&
+            (sNormArtists.includes(normArtist) || normArtist.includes(sNormArtists));
+
+          if (!matchedPrimary && !matchedAny) {
+            continue; // REJECT if artist does not match
+          }
+        }
+
+        // 5. Duration proximity check
+        const sDuration = parseInt(song.duration || song.more_info?.duration || "0", 10);
+        if (targetDuration && targetDuration > 0 && sDuration > 0) {
+          if (Math.abs(sDuration - targetDuration) > 40) {
+            continue;
+          }
+        }
+
+        const encUrl = song.encrypted_media_url || song.more_info?.encrypted_media_url;
+        const audioUrl = decryptSaavnUrl(encUrl, bitrate);
+        if (audioUrl) {
+          const rawImg = song.image || "";
+          const coverUrl = rawImg ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg") : undefined;
+          return {
+            source: "jiosaavn",
+            audioUrl,
+            duration: isNaN(sDuration) ? 210 : sDuration,
+            coverUrl,
+          };
+        }
       }
+    } catch (err) {
+      console.error("checkJioSaavnVerified error:", err);
     }
-  } catch (err) {
-    console.error("checkJioSaavnVerified error:", err);
   }
 
   return null;
@@ -248,6 +273,8 @@ export async function resolveBestYouTubeAudio(
   targetDuration?: number
 ): Promise<{ ytId: string; audioUrl: string; duration: number; coverUrl: string; source: string } | null> {
   const normTitle = cleanText(title);
+  const baseTitle = stripTrackArtifacts(title) || title;
+  const normBaseTitle = cleanText(baseTitle);
   const normArtist = cleanText(artistName);
   const cacheKey = `${normTitle}:::${normArtist}`;
 
@@ -256,9 +283,9 @@ export async function resolveBestYouTubeAudio(
   }
 
   const queries = [
-    `${artistName || ""} - ${title} official audio`.trim(),
-    `${title} ${artistName || ""} audio`.trim(),
-    `${title} ${artistName || ""}`.trim(),
+    `${artistName || ""} - ${baseTitle} official audio`.trim(),
+    `${artistName || ""} ${baseTitle} audio`.trim(),
+    `${artistName || ""} - ${title}`.trim(),
   ];
 
   for (const q of queries) {
@@ -291,10 +318,21 @@ export async function resolveBestYouTubeAudio(
         const vNormAuthor = cleanText(vAuthor);
 
         // Title match
-        if (vNormTitle.includes(normTitle)) score += 40;
-        // Artist match
-        if (normArtist && (vNormTitle.includes(normArtist) || vNormAuthor.includes(normArtist))) {
-          score += 30;
+        if (vNormTitle.includes(normTitle) || (normBaseTitle.length >= 3 && vNormTitle.includes(normBaseTitle))) {
+          score += 40;
+        }
+
+        // Artist match (Strict!)
+        if (normArtist) {
+          const authorMatches = vNormAuthor.includes(normArtist) || normArtist.includes(vNormAuthor);
+          const titleMatches = vNormTitle.includes(normArtist);
+          if (authorMatches || titleMatches) {
+            score += 40;
+            if (authorMatches) score += 20; // Extra boost if author channel itself is the artist
+          } else {
+            // Heavy penalty if artist is specified but neither title nor channel contains it
+            score -= 60;
+          }
         }
 
         // Official channel boost
@@ -316,7 +354,7 @@ export async function resolveBestYouTubeAudio(
             vTitle.includes("tribute") ||
             vTitle.includes("instrumental"))
         ) {
-          score -= 40;
+          score -= 50;
         }
 
         // Proximity scoring for duration
@@ -324,14 +362,16 @@ export async function resolveBestYouTubeAudio(
           const diff = Math.abs(durationSec - targetDuration);
           if (diff < 15) score += 30;
           else if (diff < 35) score += 15;
-          else if (diff > 80) score -= 25;
+          else if (diff > 45) score -= 30;
+          else if (diff > 90) return { v, score: -100 };
         }
 
         return { v, score };
       });
 
       scored.sort((a: any, b: any) => b.score - a.score);
-      if (scored.length > 0 && scored[0].score > 20) {
+      // Require score >= 50 so low-relevance or wrong artist songs are discarded
+      if (scored.length > 0 && scored[0].score >= 50) {
         const best = scored[0].v;
         const result = {
           source: "youtube",

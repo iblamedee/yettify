@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Ytdl, chooseFormat, Quality, Client } from "@distube/ytdl-core";
+import { Ytdl, chooseFormat, Quality, Client, createPoTokenProvider } from "@distube/ytdl-core";
 import { resolveAudioForTrack } from "@/lib/musicEngine";
 import { resolveStreamQuality } from "@/lib/audioQuality";
 
@@ -14,13 +14,44 @@ const ytNegativeCache = new Map<string, number>();
 // In-memory throttled logger timestamp map to prevent log spam (max 1 log per minute per id)
 const lastLoggedError = new Map<string, number>();
 
-// Client rotation: TV and VisionOS clients do not invoke BotGuard challenges on datacenter IPs
-const YTDL_CLIENTS = [Client.Tv, Client.VisionOS, Client.WebEmbedded, Client.Mweb] as const;
+// Client hierarchy: VisionOS and WebEmbedded prioritize non-BotGuard playback on datacenter IPs
+const YTDL_CLIENTS = [Client.VisionOS, Client.WebEmbedded, Client.Tv, Client.Mweb] as const;
 
-const ytInstance = new Ytdl({
-  clients: YTDL_CLIENTS,
-  cookie: process.env.YOUTUBE_COOKIE || undefined,
-});
+// Lazy singleton PoToken provider and Ytdl instance
+let poTokenProviderPromise: Promise<any> | null = null;
+let ytInstanceSingleton: Ytdl | null = null;
+
+async function getYtdl(): Promise<Ytdl> {
+  if (ytInstanceSingleton) return ytInstanceSingleton;
+
+  try {
+    if (!poTokenProviderPromise) {
+      poTokenProviderPromise = createPoTokenProvider({ timeoutMs: 12000 }).catch((err) => {
+        console.warn("[YouTube Stream] PoToken provider init warning:", err.message);
+        return null;
+      });
+    }
+
+    const provider = await poTokenProviderPromise;
+    if (provider) {
+      ytInstanceSingleton = new Ytdl({
+        clients: YTDL_CLIENTS,
+        getPoToken: provider,
+        cookie: process.env.YOUTUBE_COOKIE || undefined,
+      });
+      return ytInstanceSingleton;
+    }
+  } catch (err: any) {
+    console.warn("[YouTube Stream] PoToken setup error:", err.message);
+  }
+
+  // Fallback to standard clients without PoToken
+  ytInstanceSingleton = new Ytdl({
+    clients: YTDL_CLIENTS,
+    cookie: process.env.YOUTUBE_COOKIE || undefined,
+  });
+  return ytInstanceSingleton;
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -180,7 +211,8 @@ export async function GET(req: NextRequest) {
         resolvedUrl = cached.url;
       } else {
         try {
-          const info = await ytInstance.getInfo(`https://www.youtube.com/watch?v=${ytId}`);
+          const yt = await getYtdl();
+          const info = await yt.getInfo(`https://www.youtube.com/watch?v=${ytId}`);
           const format = chooseFormat(info.formats, {
             quality: Quality.HighestAudio,
             filter: { hasAudio: true, hasVideo: false },
@@ -203,48 +235,52 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // Resilient fallback for serverless cloud IPs (Vercel / AWS)
+        // Resilient parallel fallback for serverless cloud IPs (Vercel / AWS)
         if (!resolvedUrl) {
           try {
             const fallbackEndpoints = [
+              `https://pipedapi.kavin.rocks/streams/${ytId}`,
               `https://api.piped.private.coffee/streams/${ytId}`,
-              `https://piped.video/api/v1/streams/${ytId}`,
               `https://invidious.nerdvpn.de/api/v1/videos/${ytId}`,
+              `https://inv.nadeko.net/api/v1/videos/${ytId}`,
             ];
-            for (const ep of fallbackEndpoints) {
-              const fRes = await fetch(ep, {
-                headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
-                signal: AbortSignal.timeout(2500),
-              });
-              if (!fRes.ok) continue;
-              const fData = await fRes.json();
-              if (fData.audioStreams && Array.isArray(fData.audioStreams)) {
-                const best = fData.audioStreams.sort(
-                  (a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0)
-                )[0];
-                if (best?.url) {
-                  resolvedUrl = best.url;
-                  ytStreamCache.set(ytId, {
-                    url: best.url,
-                    expires: Date.now() + 3 * 3600 * 1000,
-                  });
-                  ytNegativeCache.delete(ytId);
-                  break;
+
+            const fetchMirror = async (ep: string): Promise<string | null> => {
+              try {
+                const fRes = await fetch(ep, {
+                  headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+                  signal: AbortSignal.timeout(1500),
+                });
+                if (!fRes.ok) return null;
+                const contentType = fRes.headers.get("content-type") || "";
+                if (!contentType.includes("json")) return null;
+                const fData = await fRes.json();
+                if (fData.audioStreams && Array.isArray(fData.audioStreams) && fData.audioStreams.length > 0) {
+                  const best = fData.audioStreams.sort(
+                    (a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0)
+                  )[0];
+                  if (best?.url) return best.url;
                 }
+                if (fData.adaptiveFormats && Array.isArray(fData.adaptiveFormats)) {
+                  const aud = fData.adaptiveFormats.find((f: any) => f.type?.includes("audio"));
+                  if (aud?.url) return aud.url;
+                }
+                return null;
+              } catch {
+                return null;
               }
-              if (fData.adaptiveFormats && Array.isArray(fData.adaptiveFormats)) {
-                const aud = fData.adaptiveFormats.find((f: any) =>
-                  f.type?.includes("audio")
-                );
-                if (aud?.url) {
-                  resolvedUrl = aud.url;
-                  ytStreamCache.set(ytId, {
-                    url: aud.url,
-                    expires: Date.now() + 3 * 3600 * 1000,
-                  });
-                  ytNegativeCache.delete(ytId);
-                  break;
-                }
+            };
+
+            const mirrorResults = await Promise.allSettled(fallbackEndpoints.map((ep) => fetchMirror(ep)));
+            for (const r of mirrorResults) {
+              if (r.status === "fulfilled" && r.value) {
+                resolvedUrl = r.value;
+                ytStreamCache.set(ytId, {
+                  url: r.value,
+                  expires: Date.now() + 3 * 3600 * 1000,
+                });
+                ytNegativeCache.delete(ytId);
+                break;
               }
             }
           } catch {
@@ -258,7 +294,10 @@ export async function GET(req: NextRequest) {
         ytNegativeCache.set(ytId, Date.now() + 5 * 60 * 1000);
 
         if (isJsonRequested) {
-          return NextResponse.json({ success: true, ytId, source: "youtube" });
+          return NextResponse.json(
+            { success: false, error: "Failed to resolve YouTube audio stream", ytId, source: "youtube" },
+            { status: 404 }
+          );
         }
         return NextResponse.json(
           { error: "Failed to resolve YouTube audio stream" },

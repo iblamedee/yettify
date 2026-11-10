@@ -75,6 +75,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const retryCountRef = useRef<number>(0);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastPositionStateUpdateRef = useRef<number>(0);
+  const failedYtIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -515,6 +516,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const onAudioError = () => {
     if (!currentTrack || !audioRef.current) return;
 
+    // Track the failing ID if applicable to avoid re-requesting dead stream
+    const curSrc = audioRef.current.currentSrc || audioRef.current.src || "";
+    const m = curSrc.match(/ytId=([a-zA-Z0-9_-]+)/);
+    if (m && m[1]) {
+      failedYtIdsRef.current.add(m[1]);
+    }
+    if (currentTrack.ytId) {
+      failedYtIdsRef.current.add(currentTrack.ytId);
+    }
+
     if (retryCountRef.current < 3) {
       const delay = Math.pow(2, retryCountRef.current) * 1000;
       retryCountRef.current += 1;
@@ -532,12 +543,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => {
             if (!data) return;
-            const directUrl =
-              data.source === "jiosaavn" && data.audioUrl?.startsWith("http")
-                ? data.audioUrl
-                : data.ytId
-                ? `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`
-                : data.audioUrl;
+            // Prioritize verified JioSaavn direct CDN URL
+            let directUrl: string | null = null;
+            if (data.source === "jiosaavn" && data.audioUrl?.startsWith("http")) {
+              directUrl = data.audioUrl;
+            } else if (data.ytId && !failedYtIdsRef.current.has(data.ytId)) {
+              directUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&redirect=true`;
+            } else if (data.audioUrl?.startsWith("http")) {
+              directUrl = data.audioUrl;
+            }
 
             if (directUrl && audioRef.current) {
               audioRef.current.src = directUrl;

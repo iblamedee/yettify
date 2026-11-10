@@ -153,6 +153,31 @@ function SearchContent() {
       } else {
         playTrack(tr, searchResults.tracks);
       }
+    } else if (tr.resultType === "artist") {
+      // Prioritize tracks strictly performed by this artist
+      const artistName = (tr.name || "").toLowerCase().trim();
+      const artistTracks = searchResults.tracks.filter((t) => {
+        const tArtist = (t.artist?.name || "").toLowerCase().trim();
+        return tArtist.includes(artistName) || artistName.includes(tArtist);
+      });
+      if (artistTracks.length > 0) {
+        playTrack(artistTracks[0], artistTracks);
+      } else if (tr.id) {
+        fetch(`/api/artists/${tr.id}/top-tracks`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.tracks && data.tracks.length > 0) {
+              playTrack(data.tracks[0], data.tracks);
+            } else if (searchResults.tracks.length > 0) {
+              playTrack(searchResults.tracks[0], searchResults.tracks);
+            }
+          })
+          .catch(() => {
+            if (searchResults.tracks.length > 0) {
+              playTrack(searchResults.tracks[0], searchResults.tracks);
+            }
+          });
+      }
     } else if (searchResults.tracks.length > 0) {
       playTrack(searchResults.tracks[0], searchResults.tracks);
     }
