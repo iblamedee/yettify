@@ -32,10 +32,7 @@ async function getYtdl(): Promise<Ytdl> {
 
   try {
     if (!poTokenProviderPromise) {
-      poTokenProviderPromise = createPoTokenProvider({ timeoutMs: 2000 }).catch((err) => {
-        console.warn("[YouTube Stream] PoToken provider init warning:", err.message);
-        return null;
-      });
+      poTokenProviderPromise = createPoTokenProvider({ timeoutMs: 500 }).catch(() => null);
     }
 
     const provider = await poTokenProviderPromise;
@@ -47,8 +44,8 @@ async function getYtdl(): Promise<Ytdl> {
       });
       return ytInstanceSingleton;
     }
-  } catch (err: any) {
-    console.warn("[YouTube Stream] PoToken setup error:", err.message);
+  } catch {
+    // ignore
   }
 
   // Fallback to standard clients without PoToken
@@ -246,7 +243,7 @@ export async function GET(req: NextRequest) {
 
           const format: any = await Promise.race([
             ytPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("YTDL timeout")), 2500)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("YTDL timeout")), 1000)),
           ]);
 
           if (format?.url) {
@@ -257,13 +254,8 @@ export async function GET(req: NextRequest) {
             });
             ytNegativeCache.delete(ytId);
           }
-        } catch (ytErr: any) {
-          const now = Date.now();
-          const lastLog = lastLoggedError.get(ytId) || 0;
-          if (now - lastLog > 60000) {
-            console.warn(`[YouTube Stream] Resolution note for ${ytId}: ${ytErr.message}`);
-            lastLoggedError.set(ytId, now);
-          }
+        } catch {
+          // Expected when datacenter IP is blocked by YouTube BotGuard; fall through to fast mirror/studio
         }
 
         // Tier 2: Resilient fast Invidious / Piped audio stream mirrors for datacenter IPs

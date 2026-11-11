@@ -395,12 +395,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
 
     // 2. Strict 1:1 Client-Side YouTube Playback:
-    // If the track is from YouTube (covers, slowed + reverb, live versions, remixes, or user-selected video),
-    // immediately stream that exact video client-side in the docked mini-player. Never substitute with studio tracks!
+    // If the track has any YouTube ID (covers, slowed + reverb, live versions, remixes, or user-selected video),
+    // immediately stream that exact video client-side in the docked mini-player with 0ms server latency!
     const ytMatch = track.ytId || track.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
     const activeYtId = ytMatch || track.ytId || (track.id.startsWith("yt_") ? track.id.replace(/^yt_/, "") : null);
 
-    if (activeYtId && (track.source === "youtube" || track.id.startsWith("yt_"))) {
+    if (activeYtId) {
       track.ytId = activeYtId;
       track.source = "youtube";
       setPlaybackQuality("HD");
@@ -756,9 +756,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       )
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
-          if (data?.audioUrl && audioRef.current) {
+          if (data?.audioUrl && !data?.requiresClientPlayback && audioRef.current) {
             currentTrack.audioUrl = data.audioUrl;
             playViaDirectAudio(data.audioUrl);
+          } else if (data?.ytId || currentTrack.ytId) {
+            const fallbackYtId = data?.ytId || currentTrack.ytId;
+            initOrLoadYtPlayer(fallbackYtId!);
           } else {
             setIsPlaying(false);
             if (data?.restricted) {
