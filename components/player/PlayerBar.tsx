@@ -21,6 +21,8 @@ import {
   Mic2,
   Maximize2,
   MonitorSpeaker,
+  Tv,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -44,6 +46,10 @@ export function PlayerBar() {
     previousTrack,
     toggleShuffle,
     cycleRepeat,
+    activeEngine,
+    isVideoMode,
+    setIsVideoMode,
+    toggleVideoMode,
   } = usePlayer();
 
   const { currentTime, duration, seekTo } = usePlayerProgress();
@@ -73,6 +79,27 @@ export function PlayerBar() {
         onClose={() => setIsFullPlayerOpen(false)}
       />
 
+      {/* Docked YouTube Mini-Player (Persistent DOM node for uninterrupted playback) */}
+      <div
+        id="yt-docked-player-container"
+        className={`fixed z-50 rounded-xl overflow-hidden shadow-2xl transition-all duration-300 border border-white/15 bg-black ${
+          activeEngine === "youtube" && isVideoMode
+            ? "bottom-20 md:bottom-24 right-3 md:right-6 w-64 h-36 md:w-80 md:h-48 opacity-100 pointer-events-auto scale-100"
+            : "bottom-0 right-0 w-1 h-1 opacity-0 pointer-events-none -z-50 scale-75"
+        }`}
+      >
+        <div id="yt-docked-player-frame" className="w-full h-full" />
+        {activeEngine === "youtube" && isVideoMode && (
+          <button
+            onClick={() => setIsVideoMode(false)}
+            className="absolute top-2 right-2 bg-black/80 hover:bg-black text-white p-1 rounded-full backdrop-blur-xs transition-colors z-20 shadow-md"
+            title="Minimize video"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
       {/* 1. Mobile Floating Mini-Player (Visible on mobile only, sits above BottomNav) */}
       <div
         data-testid="mobile-mini-player"
@@ -81,7 +108,7 @@ export function PlayerBar() {
       >
         {/* Track Thumbnail & Details */}
         <div className="flex items-center gap-2.5 overflow-hidden flex-1 mr-2">
-          <div className="w-10 h-10 rounded bg-[#282828] overflow-hidden shrink-0 shadow-sm relative">
+          <div className="w-10 h-10 rounded bg-[#282828] overflow-hidden shrink-0 shadow-sm relative group">
             <img
               src={currentTrack.album?.coverUrl || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=100&h=100&fit=crop"}
               alt={currentTrack.title}
@@ -89,6 +116,21 @@ export function PlayerBar() {
               decoding="async"
               className="w-full h-full object-cover"
             />
+            {activeEngine === "youtube" && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleVideoMode();
+                }}
+                className={`absolute bottom-0.5 right-0.5 p-1 rounded-full backdrop-blur-xs transition-all shadow-md z-10 ${
+                  isVideoMode ? "bg-spotify-green text-black" : "bg-black/70 text-white/90"
+                }`}
+                title={isVideoMode ? "Hide video" : "Show video"}
+                data-testid="toggle-video-mode-mobile"
+              >
+                <Tv size={10} />
+              </button>
+            )}
           </div>
           <div className="flex flex-col overflow-hidden">
             <span className="text-xs font-bold text-white truncate">
@@ -156,6 +198,23 @@ export function PlayerBar() {
             }}
             className="w-full h-full object-cover"
           />
+          {activeEngine === "youtube" && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleVideoMode();
+              }}
+              className={`absolute bottom-1 right-1 p-1 rounded-full backdrop-blur-xs transition-all shadow-md z-10 ${
+                isVideoMode
+                  ? "bg-spotify-green text-black opacity-100"
+                  : "bg-black/75 hover:bg-black text-white/90 opacity-0 group-hover:opacity-100"
+              }`}
+              title={isVideoMode ? "Hide video" : "Show video"}
+              data-testid="toggle-video-mode-desktop"
+            >
+              <Tv size={12} />
+            </button>
+          )}
         </div>
 
         <div className="flex flex-col overflow-hidden mr-2">

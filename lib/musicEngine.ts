@@ -93,6 +93,7 @@ export function cleanText(str?: string | null): string {
   return (str || "")
     .toLowerCase()
     .replace(/&amp;/g, "and")
+    .replace(/&/g, "and")
     .replace(/[^a-z0-9]/g, "");
 }
 
@@ -109,7 +110,7 @@ export function stripTrackArtifacts(title?: string | null): string {
     .trim();
 }
 
-const FORBIDDEN_COVER_KEYWORDS = [
+export const FORBIDDEN_COVER_KEYWORDS = [
   "cover",
   "karaoke",
   "tribute",
@@ -130,12 +131,42 @@ const FORBIDDEN_COVER_KEYWORDS = [
   "cover band",
   "lullaby",
   "remake",
+  "party tyme",
+  "lullapop",
+  "the neon crew",
+  "zzang karaoke",
+  "backing version",
+  "melody karaoke",
+  "instrumental karaoke",
+  "8d audio",
+  "8d",
+  "sped up",
+];
+
+export const FORBIDDEN_COVER_ARTISTS = [
+  "lullapop",
+  "party tyme",
+  "hit crew",
+  "geek music",
+  "midifine",
+  "cover band",
+  "the neon crew",
+  "zzang karaoke",
+  "daneet",
+  "ken boss",
+  "galex",
+  "slawd",
+  "pacey",
+  "leon leke",
+  "alessia brightly",
+  "acoustic hits",
+  "karaoke hits",
 ];
 
 // In-memory cache for resolved track audio streams to provide 0ms latency for repeated requests
 const streamResolutionCache = new Map<
   string,
-  { audioUrl: string; duration?: number; lyrics?: string; coverUrl?: string; source?: string; ytId?: string }
+  { audioUrl: string; duration?: number; lyrics?: string; coverUrl?: string; source?: string; ytId?: string; requiresClientPlayback?: boolean }
 >();
 
 // In-memory cache for YouTube queries to prevent rate limits
@@ -154,11 +185,23 @@ export async function checkJioSaavnVerified(
   const queries = [
     [cleanTitle, artistName].filter(Boolean).join(" "),
     [title, artistName].filter(Boolean).join(" "),
+    cleanTitle,
   ];
   const uniqueQueries = Array.from(new Set(queries.filter(Boolean)));
   const normTitle = cleanText(title);
   const normBaseTitle = cleanText(cleanTitle);
   const normArtist = cleanText(artistName);
+
+  type ScoredCandidate = {
+    audioUrl: string;
+    duration: number;
+    coverUrl?: string;
+    source: string;
+    score: number;
+    playCount: number;
+  };
+
+  const candidates: ScoredCandidate[] = [];
 
   for (const q of uniqueQueries) {
     try {
@@ -195,32 +238,39 @@ export async function checkJioSaavnVerified(
         // 1. Forbidden covers, karaoke, and tribute check
         const fullContent = `${sTitle} ${sAlbum} ${sArtists}`.toLowerCase();
         const hasCoverKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) => fullContent.includes(kw));
+        const hasCoverArtist = FORBIDDEN_COVER_ARTISTS.some(
+          (ca) => sNormArtists.includes(ca) || sAlbum.toLowerCase().includes(ca)
+        );
         const requestedHasKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) =>
           `${title} ${artistName || ""}`.toLowerCase().includes(kw)
         );
-        if (hasCoverKeyword && !requestedHasKeyword) {
+        if ((hasCoverKeyword || hasCoverArtist) && !requestedHasKeyword) {
           continue;
         }
 
-        // 2. Title matching against full title or base stripped title
-        let titleMatches = false;
-        if (normArtist) {
-          titleMatches =
-            sNormTitle === normTitle ||
-            sNormBaseTitle === normBaseTitle ||
-            (normBaseTitle.length >= 4 && (sNormBaseTitle.startsWith(normBaseTitle) || normBaseTitle.startsWith(sNormBaseTitle)));
+        // 2. Title matching
+        let titleScore = 0;
+        if (sNormTitle === normTitle || sNormBaseTitle === normBaseTitle) {
+          titleScore = 50;
+        } else if (
+          normBaseTitle.length >= 3 &&
+          (sNormBaseTitle.startsWith(normBaseTitle) || normBaseTitle.startsWith(sNormBaseTitle))
+        ) {
+          titleScore = 35;
+        } else if (normBaseTitle.length >= 4 && sNormBaseTitle.includes(normBaseTitle)) {
+          titleScore = 25;
         } else {
-          titleMatches = sNormTitle === normTitle || (normBaseTitle.length >= 3 && sNormBaseTitle === normBaseTitle);
+          continue;
         }
-        if (!titleMatches) continue;
 
         // 3. Length ratio check (reject mashups and combined songs)
         const lengthRatio = sNormBaseTitle.length / Math.max(1, normBaseTitle.length);
-        if (lengthRatio > 1.3 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
+        if (lengthRatio > 1.4 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
           continue;
         }
 
-        // 4. Strict Artist Matching: Ensure the primary artist strictly matches
+        // 4. Artist scoring
+        let artistScore = 0;
         if (normArtist) {
           const primaryNorms = primaryArtistNames.map((n: string) => cleanText(n));
           const matchedPrimary = primaryNorms.some(
@@ -230,37 +280,71 @@ export async function checkJioSaavnVerified(
             normArtist.length >= 3 &&
             (sNormArtists.includes(normArtist) || normArtist.includes(sNormArtists));
 
-          if (!matchedPrimary && !matchedAny) {
-            continue; // REJECT if artist does not match
+          if (matchedPrimary) {
+            artistScore = 40;
+          } else if (matchedAny) {
+            artistScore = 25;
+          } else {
+            artistScore = -10;
           }
         }
 
-        // 5. Duration proximity check
+        // 5. Popularity / Play count boost
+        const playCount = parseInt(song.play_count || song.more_info?.play_count || "0", 10);
+        let popScore = 0;
+        if (playCount > 10000000) popScore = 30;
+        else if (playCount > 1000000) popScore = 20;
+        else if (playCount > 100000) popScore = 10;
+
+        // 6. Duration proximity check
         const sDuration = parseInt(song.duration || song.more_info?.duration || "0", 10);
+        let durationScore = 0;
         if (targetDuration && targetDuration > 0 && sDuration > 0) {
           const diff = Math.abs(sDuration - targetDuration);
-          const maxVariance = titleMatches && normArtist ? 60 : 35;
-          if (diff > maxVariance) {
-            continue;
-          }
+          if (diff <= 15) durationScore = 15;
+          else if (diff <= 40) durationScore = 5;
+          else if (diff > 75) continue;
         }
+
+        const totalScore = titleScore + artistScore + popScore + durationScore;
 
         const encUrl = song.encrypted_media_url || song.more_info?.encrypted_media_url;
         const audioUrl = decryptSaavnUrl(encUrl, bitrate);
         if (audioUrl) {
           const rawImg = song.image || "";
-          const coverUrl = rawImg ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg") : undefined;
-          return {
+          const coverUrl = rawImg
+            ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg")
+            : undefined;
+          candidates.push({
             source: "jiosaavn",
             audioUrl,
             duration: isNaN(sDuration) ? 210 : sDuration,
             coverUrl,
-          };
+            score: totalScore,
+            playCount,
+          });
         }
       }
     } catch (err) {
       console.error("checkJioSaavnVerified error:", err);
     }
+  }
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return b.playCount - a.playCount;
+  });
+
+  const best = candidates[0];
+  if (best.score >= 35) {
+    return {
+      source: best.source,
+      audioUrl: best.audioUrl,
+      duration: best.duration,
+      coverUrl: best.coverUrl,
+    };
   }
 
   return null;
@@ -418,32 +502,15 @@ export async function resolveAudioForTrack(
     return saavnRes;
   }
 
-  // 1b. Fallback fuzzy search on JioSaavn for studio tracks before YouTube
-  try {
-    const cleanT = stripTrackArtifacts(title) || title;
-    const sq = [cleanT, artistName].filter(Boolean).join(" ");
-    const saavnSearch = await searchJioSaavn(sq, 4);
-    if (saavnSearch && saavnSearch.length > 0) {
-      const match = saavnSearch[0];
-      const normCand = cleanText(match.title);
-      if (normCand === normTitle || normCand.includes(normTitle) || normTitle.includes(normCand)) {
-        const res = {
-          source: "jiosaavn" as const,
-          audioUrl: match.audioUrl,
-          duration: match.duration,
-          coverUrl: match.album.coverUrl,
-        };
-        streamResolutionCache.set(cacheKey, res);
-        return res;
-      }
-    }
-  } catch {}
-
-  // 2. High-precision scored YouTube stream resolution
+  // 2. High-precision scored YouTube stream resolution (with client-side playback fallback)
   const ytRes = await resolveBestYouTubeAudio(title, artistName, targetDuration);
   if (ytRes) {
-    streamResolutionCache.set(cacheKey, ytRes);
-    return ytRes;
+    const res = {
+      ...ytRes,
+      requiresClientPlayback: true,
+    };
+    streamResolutionCache.set(cacheKey, res);
+    return res;
   }
 
   return null;
@@ -699,8 +766,9 @@ export async function searchJioSaavn(query: string, limit = 10): Promise<GlobalT
       // Filter out unwanted covers, karaoke, and tribute versions
       const fullSearchContent = `${title} ${albumTitle} ${artistName}`.toLowerCase();
       const hasCover = FORBIDDEN_COVER_KEYWORDS.some((kw) => fullSearchContent.includes(kw));
+      const hasCoverArtist = FORBIDDEN_COVER_ARTISTS.some((ca) => fullSearchContent.includes(ca));
       const qHasCover = FORBIDDEN_COVER_KEYWORDS.some((kw) => query.toLowerCase().includes(kw));
-      if (hasCover && !qHasCover) continue;
+      if ((hasCover || hasCoverArtist) && !qHasCover) continue;
 
       const rawImg = s.image || "";
       const coverUrl = rawImg ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg") : "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&h=300&fit=crop";

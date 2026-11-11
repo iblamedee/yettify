@@ -377,30 +377,6 @@ export async function GET(req: NextRequest) {
                   expires: Date.now() + 6 * 3600 * 1000,
                 });
                 ytNegativeCache.delete(ytId);
-              } else {
-                // 2. Search JioSaavn catalog for verified studio master
-                const cleanT = stripTrackArtifacts(candidateTitle) || candidateTitle;
-                const searchQueries = [
-                  [cleanT, candidateArtist].filter(Boolean).join(" "),
-                  candidateTitle,
-                ];
-                for (const sq of searchQueries) {
-                  if (!sq.trim()) continue;
-                  const saavnTracks = await searchJioSaavn(sq.trim(), 3);
-                  if (saavnTracks && saavnTracks.length > 0) {
-                    const best = saavnTracks[0];
-                    if (best?.audioUrl && best.audioUrl.startsWith("http")) {
-                      resolvedUrl = best.audioUrl;
-                      resolvedSource = "jiosaavn";
-                      ytStreamCache.set(ytId, {
-                        url: resolvedUrl,
-                        expires: Date.now() + 6 * 3600 * 1000,
-                      });
-                      ytNegativeCache.delete(ytId);
-                      break;
-                    }
-                  }
-                }
               }
             }
           } catch (studioErr: any) {
@@ -410,29 +386,23 @@ export async function GET(req: NextRequest) {
       }
 
       if (!resolvedUrl) {
-        // Cache negative result for 3 minutes so rapid retries do not trigger IP bans
-        ytNegativeCache.set(ytId, Date.now() + 3 * 60 * 1000);
-
+        // If server cannot extract audio stream on datacenter IP, signal client to use Client-Side YouTube playback
         if (isJsonRequested) {
-          return NextResponse.json(
-            {
-              success: false,
-              error: "This video stream is restricted by YouTube BotGuard on cloud servers. Try searching for the studio song.",
-              restricted: true,
-              ytId,
-              source: "youtube",
-            },
-            { status: 404 }
-          );
+          return NextResponse.json({
+            success: true,
+            source: "youtube",
+            ytId,
+            requiresClientPlayback: true,
+          });
         }
         return NextResponse.json(
           {
-            error: "This video stream is restricted by YouTube BotGuard on cloud servers. Try searching for the studio song.",
-            restricted: true,
-            ytId,
+            error: "This video stream is played via client-side player.",
             source: "youtube",
+            ytId,
+            requiresClientPlayback: true,
           },
-          { status: 404 }
+          { status: 200 }
         );
       }
 

@@ -39,6 +39,11 @@ export interface PlayerContextType {
   toggleShuffle: () => void;
   cycleRepeat: () => void;
   audioRef: React.RefObject<HTMLAudioElement>;
+  activeEngine: "audio" | "youtube";
+  isVideoMode: boolean;
+  setIsVideoMode: (val: boolean) => void;
+  toggleVideoMode: () => void;
+  activeYtVideoId: string | null;
   currentTime?: number;
   duration?: number;
 }
@@ -77,6 +82,36 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const retryCountRef = useRef<number>(0);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastPositionStateUpdateRef = useRef<number>(0);
+
+  const [activeEngine, setActiveEngine] = useState<"audio" | "youtube">("audio");
+  const [isVideoMode, setIsVideoMode] = useState<boolean>(false);
+  const [activeYtVideoId, setActiveYtVideoId] = useState<string | null>(null);
+  const ytPlayerRef = useRef<any>(null);
+  const activeEngineRef = useRef<"audio" | "youtube">("audio");
+  const activeYtVideoIdRef = useRef<string | null>(null);
+
+  const toggleVideoMode = useCallback(() => {
+    setIsVideoMode((prev) => !prev);
+  }, []);
+
+  useEffect(() => {
+    activeEngineRef.current = activeEngine;
+  }, [activeEngine]);
+
+  useEffect(() => {
+    activeYtVideoIdRef.current = activeYtVideoId;
+  }, [activeYtVideoId]);
+
+  // Load YouTube IFrame API script once
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!(window as any).YT) {
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScriptTag = document.getElementsByTagName("script")[0];
+      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
+    }
+  }, []);
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -160,8 +195,140 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isPlaying]);
 
+  const nextTrackRef = useRef<() => void>(() => {});
+
+  const initOrLoadYtPlayer = useCallback(
+    (videoId: string) => {
+      setActiveEngine("youtube");
+      setActiveYtVideoId(videoId);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
+
+      const onReady = (player: any) => {
+        try {
+          player.setVolume(isMuted ? 0 : volume * 100);
+          player.playVideo();
+          setIsPlaying(true);
+        } catch {}
+      };
+
+      const onStateChange = (event: any) => {
+        if (event.data === 1) {
+          // Playing
+          setIsPlaying(true);
+          if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+          if (ytPlayerRef.current?.getDuration) {
+            const d = ytPlayerRef.current.getDuration();
+            if (d > 0) setDuration(d);
+          }
+        } else if (event.data === 2) {
+          // Paused
+          setIsPlaying(false);
+          if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+        } else if (event.data === 0) {
+          // Ended
+          if (repeatMode === "one") {
+            try {
+              ytPlayerRef.current?.seekTo(0, true);
+              ytPlayerRef.current?.playVideo();
+            } catch {}
+          } else {
+            nextTrackRef.current();
+          }
+        }
+      };
+
+      if (typeof window !== "undefined") {
+        const mountPlayer = (attempts = 0) => {
+          const YT = (window as any).YT;
+          if (!YT || !YT.Player) {
+            if (attempts < 25) {
+              setTimeout(() => mountPlayer(attempts + 1), 200);
+            }
+            return;
+          }
+
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
+            try {
+              ytPlayerRef.current.loadVideoById(videoId);
+              ytPlayerRef.current.setVolume(isMuted ? 0 : volume * 100);
+              ytPlayerRef.current.playVideo();
+              setIsPlaying(true);
+              return;
+            } catch {
+              // Recreate instance if corrupted
+            }
+          }
+
+          const container = document.getElementById("yt-docked-player-frame");
+          if (!container) {
+            if (attempts < 25) {
+              setTimeout(() => mountPlayer(attempts + 1), 100);
+            }
+            return;
+          }
+
+          try {
+            ytPlayerRef.current = new YT.Player("yt-docked-player-frame", {
+              videoId: videoId,
+              playerVars: {
+                autoplay: 1,
+                controls: 0,
+                modestbranding: 1,
+                rel: 0,
+                playsinline: 1,
+                enablejsapi: 1,
+                origin: typeof window !== "undefined" ? window.location.origin : undefined,
+              },
+              events: {
+                onReady: (e: any) => onReady(e.target),
+                onStateChange: onStateChange,
+                onError: () => {
+                  showToast("YouTube playback error. Trying next track...", "error");
+                  setTimeout(() => nextTrackRef.current(), 1500);
+                },
+              },
+            });
+          } catch (e) {
+            console.error("Failed to instantiate YouTube player:", e);
+          }
+        };
+
+        mountPlayer();
+      }
+    },
+    [isMuted, volume, repeatMode, showToast]
+  );
+
+  // Sync YouTube playback progress when YouTube engine is active
+  useEffect(() => {
+    if (activeEngine !== "youtube") return;
+    const interval = setInterval(() => {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
+        try {
+          const cur = ytPlayerRef.current.getCurrentTime() || 0;
+          const dur = ytPlayerRef.current.getDuration() || duration || 0;
+          setCurrentTime(cur);
+          if (dur > 0 && dur !== duration) {
+            setDuration(dur);
+          }
+          updateMediaSessionPositionState(cur, dur);
+        } catch {}
+      }
+    }, 250);
+    return () => clearInterval(interval);
+  }, [activeEngine, duration, updateMediaSessionPositionState]);
+
   // Play audio directly through native HTML5 audio element
   const playViaDirectAudio = (url: string) => {
+    setActiveEngine("audio");
+    if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === "function") {
+      try {
+        ytPlayerRef.current.pauseVideo();
+      } catch {}
+    }
     if (!audioRef.current) return;
     if (audioRef.current.src !== url) {
       audioRef.current.src = url;
@@ -227,75 +394,88 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // 2. Direct YouTube ID (streamed natively through resilient /api/stream audio proxy)
+    // 2. Direct YouTube ID or On-Demand Stream Resolution
     const ytMatch = track.ytId || track.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
-    if (ytMatch || track.source === "youtube") {
-      const activeYtId = ytMatch || track.ytId || track.id.replace(/^yt_/, "");
-      track.ytId = activeYtId;
-      const qInfo = resolveStreamQuality(track.audioUrl || "", "youtube", audioQualityPref);
-      setPlaybackQuality(qInfo.tier);
-      const streamUrl = `/api/stream?ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&redirect=true`;
-      playViaDirectAudio(streamUrl);
+    const activeYtId = ytMatch || track.ytId || (track.id.startsWith("yt_") ? track.id.replace(/^yt_/, "") : null);
 
-      // Concurrently query metadata so player can switch to direct CDN URL for zero latency & seeking
-      fetch(`/api/stream?format=json&ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (data?.audioUrl && data.audioUrl.startsWith("http") && !data.audioUrl.includes("/api/stream")) {
-            track.audioUrl = data.audioUrl;
-            if (data.source) track.source = data.source;
-            if (data.qualityTier) setPlaybackQuality(data.qualityTier);
-          } else if (data?.restricted) {
-            showToast("This video stream is restricted by YouTube on cloud servers.", "error");
-          }
-        })
-        .catch(() => {});
-      return;
-    }
-
-    // 3. Resolve stream on demand with immediate direct streaming fallback
-    const directFallbackUrl = track.audioUrl?.startsWith("/api/stream")
-      ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}redirect=true`
-      : `/api/stream?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&redirect=true`;
-
-    playViaDirectAudio(directFallbackUrl);
-
-    // Concurrently fetch stream metadata and direct CDN source for quality resolution
-    const queryUrl = track.audioUrl?.startsWith("/api/stream")
+    const queryUrl = activeYtId
+      ? `/api/stream?format=json&ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`
+      : track.audioUrl?.startsWith("/api/stream")
       ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json&bitrate=${prefBitrate}`
       : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`;
+
+    setIsPlaying(true);
 
     fetch(queryUrl)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!data) return;
+        if (!data) {
+          if (activeYtId) {
+            initOrLoadYtPlayer(activeYtId);
+          }
+          return;
+        }
+
         if (data.qualityTier) {
           setPlaybackQuality(data.qualityTier);
-        } else {
+        } else if (data.audioUrl) {
           setPlaybackQuality(resolveStreamQuality(data.audioUrl, data.source, audioQualityPref).tier);
         }
 
-        if (data.source === "jiosaavn" && data.audioUrl && data.audioUrl.startsWith("http")) {
+        // If JioSaavn has clean studio audio (or CDN direct link)
+        if (data.audioUrl && data.audioUrl.startsWith("http") && !data.requiresClientPlayback) {
           track.audioUrl = data.audioUrl;
+          if (data.source) track.source = data.source;
           playViaDirectAudio(data.audioUrl);
-        } else if (data.audioUrl && data.audioUrl.startsWith("http")) {
-          track.audioUrl = data.audioUrl;
-          playViaDirectAudio(data.audioUrl);
-        } else if (data.ytId) {
-          track.ytId = data.ytId;
-          const streamUrl = `/api/stream?ytId=${encodeURIComponent(data.ytId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&redirect=true`;
-          if (audioRef.current && audioRef.current.src !== streamUrl) {
-            playViaDirectAudio(streamUrl);
-          }
+          return;
+        }
+
+        // Fallback to client-side YouTube player (runs on user's residential IP)
+        const targetYtId = data.ytId || activeYtId;
+        if (targetYtId) {
+          track.ytId = targetYtId;
+          track.source = "youtube";
+          setPlaybackQuality("HD");
+          initOrLoadYtPlayer(targetYtId);
+        } else {
+          showToast("Unable to play track audio.", "error");
+          setIsPlaying(false);
         }
       })
       .catch(() => {
-        setIsPlaying(true);
+        if (activeYtId) {
+          initOrLoadYtPlayer(activeYtId);
+        } else {
+          setIsPlaying(false);
+        }
       });
   };
 
   const togglePlayPause = () => {
-    if (!currentTrack || !audioRef.current) return;
+    if (!currentTrack) return;
+
+    if (activeEngine === "youtube") {
+      if (isPlayingRef.current) {
+        if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === "function") {
+          try {
+            ytPlayerRef.current.pauseVideo();
+          } catch {}
+        }
+        setIsPlaying(false);
+        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+      } else {
+        if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === "function") {
+          try {
+            ytPlayerRef.current.playVideo();
+          } catch {}
+        }
+        setIsPlaying(true);
+        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+      }
+      return;
+    }
+
+    if (!audioRef.current) return;
 
     if (isPlayingRef.current) {
       audioRef.current.pause();
@@ -314,7 +494,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const seekTo = (seconds: number) => {
     const clamped = Math.max(0, Math.min(duration || 9999, seconds));
-    if (audioRef.current) {
+    if (activeEngine === "youtube") {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === "function") {
+        try {
+          ytPlayerRef.current.seekTo(clamped, true);
+        } catch {}
+      }
+    } else if (audioRef.current) {
       audioRef.current.currentTime = clamped;
     }
     setCurrentTime(clamped);
@@ -330,6 +516,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (audioRef.current) {
       audioRef.current.volume = clamped;
     }
+    if (ytPlayerRef.current && typeof ytPlayerRef.current.setVolume === "function") {
+      try {
+        ytPlayerRef.current.setVolume(clamped * 100);
+      } catch {}
+    }
     try {
       localStorage.setItem("spotify_player_volume", clamped.toString());
     } catch {
@@ -340,13 +531,25 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const toggleMute = () => {
     if (isMuted) {
       setIsMuted(false);
-      setVolumeState(previousVolume || 0.5);
-      if (audioRef.current) audioRef.current.volume = previousVolume || 0.5;
+      const targetVol = previousVolume || 0.5;
+      setVolumeState(targetVol);
+      if (audioRef.current) audioRef.current.volume = targetVol;
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.unMute === "function") {
+        try {
+          ytPlayerRef.current.unMute();
+          ytPlayerRef.current.setVolume(targetVol * 100);
+        } catch {}
+      }
     } else {
       setPreviousVolume(volume);
       setIsMuted(true);
       setVolumeState(0);
       if (audioRef.current) audioRef.current.volume = 0;
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.mute === "function") {
+        try {
+          ytPlayerRef.current.mute();
+        } catch {}
+      }
     }
   };
 
@@ -405,13 +608,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setCurrentTime(0);
   };
 
-  const previousTrack = () => {
-    if (!audioRef.current) return;
+  useEffect(() => {
+    nextTrackRef.current = nextTrack;
+  }, [nextTrack]);
 
+  const previousTrack = () => {
     // Spotify standard: If more than 3 seconds in, restart current track
     if (currentTime > 3) {
-      audioRef.current.currentTime = 0;
-      setCurrentTime(0);
+      seekTo(0);
       return;
     }
 
@@ -421,8 +625,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setHistory((prevList) => prevList.slice(1));
       playTrack(prev);
     } else {
-      audioRef.current.currentTime = 0;
-      setCurrentTime(0);
+      seekTo(0);
     }
   };
 
@@ -720,6 +923,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       audioRef,
+      activeEngine,
+      isVideoMode,
+      setIsVideoMode,
+      toggleVideoMode,
+      activeYtVideoId,
       currentTime,
       duration,
     }),
@@ -747,6 +955,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       clearUserQueue,
       toggleShuffle,
       cycleRepeat,
+      activeEngine,
+      isVideoMode,
+      toggleVideoMode,
+      activeYtVideoId,
     ]
   );
 
