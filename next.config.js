@@ -2,7 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    serverComponentsExternalPackages: ["yt-search", "@distube/ytdl-core", "cheerio"],
+    serverComponentsExternalPackages: ["yt-search", "cheerio"],
   },
   images: {
     remotePatterns: [

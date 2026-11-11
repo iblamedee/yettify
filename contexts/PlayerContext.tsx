@@ -77,6 +77,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const currentTrackRef = useRef<Track | null>(null);
   const prefetchedTrackIdRef = useRef<string | null>(null);
   const isPlayingRef = useRef<boolean>(isPlaying);
   const retryCountRef = useRef<number>(0);
@@ -101,6 +102,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     activeYtVideoIdRef.current = activeYtVideoId;
   }, [activeYtVideoId]);
+
+  useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
 
   // Load YouTube IFrame API script once
   useEffect(() => {
@@ -285,7 +290,33 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
               events: {
                 onReady: (e: any) => onReady(e.target),
                 onStateChange: onStateChange,
-                onError: () => {
+                onError: (event: any) => {
+                  // If video embedding is disabled by record label (error 101/150), recover via JioSaavn studio audio or embeddable alternate
+                  const trackToRecover = currentTrackRef.current;
+                  if (trackToRecover) {
+                    fetch(
+                      `/api/stream?format=json&title=${encodeURIComponent(trackToRecover.title)}&artist=${encodeURIComponent(trackToRecover.artist?.name || "")}&duration=${trackToRecover.duration || 0}`
+                    )
+                      .then((r) => (r.ok ? r.json() : null))
+                      .then((data) => {
+                        if (data?.audioUrl && data.source === "jiosaavn") {
+                          trackToRecover.audioUrl = data.audioUrl;
+                          playViaDirectAudio(data.audioUrl);
+                          return;
+                        }
+                        if (data?.ytId && data.ytId !== activeYtVideoIdRef.current) {
+                          trackToRecover.ytId = data.ytId;
+                          initOrLoadYtPlayer(data.ytId);
+                          return;
+                        }
+                        showToast("Video restricted by owner. Playing next...", "error");
+                        setTimeout(() => nextTrackRef.current(), 1200);
+                      })
+                      .catch(() => {
+                        nextTrackRef.current();
+                      });
+                    return;
+                  }
                   showToast("YouTube playback error. Trying next track...", "error");
                   setTimeout(() => nextTrackRef.current(), 1500);
                 },
@@ -743,7 +774,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   // Dynamic Stream Self-Healing: If an audio URL expires or fails, recover a fresh stream dynamically
   const onAudioError = () => {
-    if (!currentTrack || !audioRef.current) return;
+    const track = currentTrackRef.current || currentTrack;
+    if (!track || !audioRef.current) return;
 
     if (retryCountRef.current < 2) {
       retryCountRef.current += 1;
@@ -752,15 +784,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       else if (audioQualityPref === "NORMAL") prefBitrate = "160";
 
       fetch(
-        `/api/stream?format=json&title=${encodeURIComponent(currentTrack.title)}&artist=${encodeURIComponent(currentTrack.artist?.name || "")}&duration=${currentTrack.duration || 0}&bitrate=${prefBitrate}`
+        `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`
       )
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (data?.audioUrl && !data?.requiresClientPlayback && audioRef.current) {
-            currentTrack.audioUrl = data.audioUrl;
+            track.audioUrl = data.audioUrl;
             playViaDirectAudio(data.audioUrl);
-          } else if (data?.ytId || currentTrack.ytId) {
-            const fallbackYtId = data?.ytId || currentTrack.ytId;
+          } else if (data?.ytId || track.ytId) {
+            const fallbackYtId = data?.ytId || track.ytId;
             initOrLoadYtPlayer(fallbackYtId!);
           } else {
             setIsPlaying(false);

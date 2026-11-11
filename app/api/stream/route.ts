@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Ytdl, chooseFormat, Quality, Client, createPoTokenProvider } from "@distube/ytdl-core";
 import {
   resolveAudioForTrack,
   checkJioSaavnVerified,
@@ -11,50 +10,8 @@ import { resolveStreamQuality } from "@/lib/audioQuality";
 
 export const dynamic = "force-dynamic";
 
-// In-memory cache for resolved Google Video audio URLs (lasts ~3 hours)
-const ytStreamCache = new Map<string, { url: string; expires: number }>();
-
-// Negative cache for unresolvable / unavailable video IDs (lasts 5 minutes) to prevent hammering
-const ytNegativeCache = new Map<string, number>();
-
-// In-memory throttled logger timestamp map to prevent log spam (max 1 log per minute per id)
-const lastLoggedError = new Map<string, number>();
-
-// Client hierarchy: VisionOS and WebEmbedded prioritize non-BotGuard playback on datacenter IPs
-const YTDL_CLIENTS = [Client.VisionOS, Client.WebEmbedded, Client.Tv, Client.Mweb] as const;
-
-// Lazy singleton PoToken provider and Ytdl instance
-let poTokenProviderPromise: Promise<any> | null = null;
-let ytInstanceSingleton: Ytdl | null = null;
-
-async function getYtdl(): Promise<Ytdl> {
-  if (ytInstanceSingleton) return ytInstanceSingleton;
-
-  try {
-    if (!poTokenProviderPromise) {
-      poTokenProviderPromise = createPoTokenProvider({ timeoutMs: 500 }).catch(() => null);
-    }
-
-    const provider = await poTokenProviderPromise;
-    if (provider) {
-      ytInstanceSingleton = new Ytdl({
-        clients: YTDL_CLIENTS,
-        getPoToken: provider,
-        cookie: process.env.YOUTUBE_COOKIE || undefined,
-      });
-      return ytInstanceSingleton;
-    }
-  } catch {
-    // ignore
-  }
-
-  // Fallback to standard clients without PoToken
-  ytInstanceSingleton = new Ytdl({
-    clients: YTDL_CLIENTS,
-    cookie: process.env.YOUTUBE_COOKIE || undefined,
-  });
-  return ytInstanceSingleton;
-}
+// In-memory cache for resolved audio URLs (lasts ~6 hours)
+const streamCache = new Map<string, { url: string; expires: number }>();
 
 export async function GET(req: NextRequest) {
   try {
@@ -200,205 +157,82 @@ export async function GET(req: NextRequest) {
       let resolvedUrl: string | null = null;
       let resolvedSource: "youtube" | "jiosaavn" = "youtube";
 
-      // Check negative cache first: if video was recently confirmed unavailable/blocked, avoid re-hammering
-      const negativeExpiry = ytNegativeCache.get(ytId);
-      if (negativeExpiry && negativeExpiry > Date.now()) {
-        if (isJsonRequested) {
-          return NextResponse.json({
-            success: false,
-            error: "This stream is temporarily unavailable or restricted by YouTube BotGuard on cloud servers.",
-            restricted: true,
-            ytId,
-            source: "youtube",
-          }, { status: 404 });
-        }
-        return NextResponse.json(
-          {
-            error: "This stream is temporarily unavailable or restricted by YouTube BotGuard on cloud servers.",
-            restricted: true,
-            ytId,
-            source: "youtube",
-          },
-          { status: 404 }
-        );
-      }
-
-      const cached = ytStreamCache.get(ytId);
+      const cached = streamCache.get(ytId);
       if (cached && cached.expires > Date.now()) {
         resolvedUrl = cached.url;
-        if (resolvedUrl.includes(".saavncdn.com")) {
-          resolvedSource = "jiosaavn";
-        }
+        resolvedSource = "jiosaavn";
       } else {
-        // Tier 1: Try native ytdl extraction (bounded fast timeout so serverless doesn't stall)
+        // Fast JioSaavn Studio Master Resolution (~100ms, zero bot risk, full 320kbps CDN audio)
         try {
-          const ytPromise = (async () => {
-            const yt = await getYtdl();
-            const info = await yt.getInfo(`https://www.youtube.com/watch?v=${ytId}`);
-            return chooseFormat(info.formats, {
-              quality: Quality.HighestAudio,
-              filter: { hasAudio: true, hasVideo: false },
-            });
-          })();
+          let candidateTitle = title || "";
+          let candidateArtist = artist || "";
 
-          const format: any = await Promise.race([
-            ytPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("YTDL timeout")), 1000)),
-          ]);
+          // Fast zero-bot YouTube oEmbed endpoint if title is missing
+          if (!candidateTitle && ytId) {
+            try {
+              const oembedRes = await fetch(
+                `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${ytId}&format=json`,
+                { signal: AbortSignal.timeout(1200) }
+              );
+              if (oembedRes.ok) {
+                const oData = await oembedRes.json();
+                const rawTitle = oData.title || "";
+                const rawAuthor = (oData.author_name || "")
+                  .replace(/\s*-\s*Topic$/i, "")
+                  .replace(/VEVO$/i, "")
+                  .trim();
 
-          if (format?.url) {
-            resolvedUrl = format.url;
-            ytStreamCache.set(ytId, {
-              url: format.url,
-              expires: Date.now() + 3 * 3600 * 1000,
-            });
-            ytNegativeCache.delete(ytId);
-          }
-        } catch {
-          // Expected when datacenter IP is blocked by YouTube BotGuard; fall through to fast mirror/studio
-        }
-
-        // Tier 2: Resilient fast Invidious / Piped audio stream mirrors for datacenter IPs
-        if (!resolvedUrl) {
-          try {
-            const fallbackEndpoints = [
-              `https://pipedapi.kavin.rocks/streams/${ytId}`,
-              `https://api.piped.private.coffee/streams/${ytId}`,
-              `https://inv.nadeko.net/api/v1/videos/${ytId}`,
-              `https://invidious.nerdvpn.de/api/v1/videos/${ytId}`,
-            ];
-
-            const fetchMirror = async (ep: string): Promise<string | null> => {
-              try {
-                const fRes = await fetch(ep, {
-                  headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-                  signal: AbortSignal.timeout(1800),
-                });
-                if (!fRes.ok) return null;
-                const fData = await fRes.json();
-                if (fData.audioStreams && Array.isArray(fData.audioStreams) && fData.audioStreams.length > 0) {
-                  const best = fData.audioStreams.sort(
-                    (a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0)
-                  )[0];
-                  if (best?.url) return best.url;
-                }
-                if (fData.adaptiveFormats && Array.isArray(fData.adaptiveFormats)) {
-                  const aud = fData.adaptiveFormats.find((f: any) => f.type?.includes("audio"));
-                  if (aud?.url) return aud.url;
-                }
-                return null;
-              } catch {
-                return null;
-              }
-            };
-
-            const mirrorResults = await Promise.allSettled(fallbackEndpoints.map((ep) => fetchMirror(ep)));
-            for (const r of mirrorResults) {
-              if (r.status === "fulfilled" && r.value) {
-                resolvedUrl = r.value;
-                ytStreamCache.set(ytId, {
-                  url: r.value,
-                  expires: Date.now() + 3 * 3600 * 1000,
-                });
-                ytNegativeCache.delete(ytId);
-                break;
-              }
-            }
-          } catch {
-            // mirror fallback error ignored
-          }
-        }
-
-        // Tier 3: Full-Length 320kbps Studio Master Resolution via JioSaavn CDN (0% Bot Risk, Full 3-5min Playback)
-        // Resolves exact song using track metadata or YouTube oEmbed data, completely eliminating 30-second truncations
-        if (!resolvedUrl) {
-          try {
-            let candidateTitle = title || "";
-            let candidateArtist = artist || "";
-
-            // If title is missing, fetch metadata via fast zero-bot YouTube oEmbed endpoint
-            if (!candidateTitle && ytId) {
-              try {
-                const oembedRes = await fetch(
-                  `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${ytId}&format=json`,
-                  { signal: AbortSignal.timeout(2000) }
-                );
-                if (oembedRes.ok) {
-                  const oData = await oembedRes.json();
-                  const rawTitle = oData.title || "";
-                  const rawAuthor = (oData.author_name || "")
-                    .replace(/\s*-\s*Topic$/i, "")
-                    .replace(/VEVO$/i, "")
-                    .trim();
-
-                  // Parse "Artist - Title" format common in YouTube uploads
-                  if (rawTitle.includes(" - ")) {
-                    const parts = rawTitle.split(" - ");
-                    candidateArtist = parts[0].trim();
-                    candidateTitle = parts.slice(1).join(" - ").trim();
-                  } else {
-                    candidateTitle = rawTitle;
-                    if (!candidateArtist && rawAuthor) {
-                      candidateArtist = rawAuthor;
-                    }
+                if (rawTitle.includes(" - ")) {
+                  const parts = rawTitle.split(" - ");
+                  candidateArtist = parts[0].trim();
+                  candidateTitle = parts.slice(1).join(" - ").trim();
+                } else {
+                  candidateTitle = rawTitle;
+                  if (!candidateArtist && rawAuthor) {
+                    candidateArtist = rawAuthor;
                   }
                 }
-              } catch {
-                // oembed error ignored
               }
-            }
-
-            const isAlternateOrCover = FORBIDDEN_COVER_KEYWORDS.some((kw) => candidateTitle.toLowerCase().includes(kw));
-
-            if (candidateTitle && !isAlternateOrCover) {
-              const durationNum = parseInt(searchParams.get("duration") || "0", 10);
-              const bitrateParam = searchParams.get("bitrate");
-              const targetBitrate: "96" | "160" | "320" =
-                bitrateParam === "96" || bitrateParam === "160" ? bitrateParam : "320";
-
-              // 1. Try verified JioSaavn resolution with duration tolerance
-              const saavnRes = await checkJioSaavnVerified(
-                candidateTitle,
-                candidateArtist,
-                durationNum > 0 ? durationNum : undefined,
-                targetBitrate
-              );
-
-              if (saavnRes?.audioUrl && saavnRes.audioUrl.startsWith("http")) {
-                resolvedUrl = saavnRes.audioUrl;
-                resolvedSource = "jiosaavn";
-                ytStreamCache.set(ytId, {
-                  url: resolvedUrl,
-                  expires: Date.now() + 6 * 3600 * 1000,
-                });
-                ytNegativeCache.delete(ytId);
-              }
-            }
-          } catch (studioErr: any) {
-            console.warn(`[Studio Fallback] Error resolving studio audio for ${ytId}:`, studioErr.message);
+            } catch {}
           }
-        }
+
+          const isAlternateOrCover = FORBIDDEN_COVER_KEYWORDS.some((kw) =>
+            candidateTitle.toLowerCase().includes(kw)
+          );
+
+          if (candidateTitle && !isAlternateOrCover) {
+            const durationNum = parseInt(searchParams.get("duration") || "0", 10);
+            const bitrateParam = searchParams.get("bitrate");
+            const targetBitrate: "96" | "160" | "320" =
+              bitrateParam === "96" || bitrateParam === "160" ? bitrateParam : "320";
+
+            const saavnRes = await checkJioSaavnVerified(
+              candidateTitle,
+              candidateArtist,
+              durationNum > 0 ? durationNum : undefined,
+              targetBitrate
+            );
+
+            if (saavnRes?.audioUrl && saavnRes.audioUrl.startsWith("http")) {
+              resolvedUrl = saavnRes.audioUrl;
+              resolvedSource = "jiosaavn";
+              streamCache.set(ytId, {
+                url: resolvedUrl,
+                expires: Date.now() + 6 * 3600 * 1000,
+              });
+            }
+          }
+        } catch {}
       }
 
       if (!resolvedUrl) {
-        // If server cannot extract audio stream on datacenter IP, signal client to use Client-Side YouTube playback
-        if (isJsonRequested) {
-          return NextResponse.json({
-            success: true,
-            source: "youtube",
-            ytId,
-            requiresClientPlayback: true,
-          });
-        }
-        return NextResponse.json(
-          {
-            error: "This video stream is played via client-side player.",
-            source: "youtube",
-            ytId,
-            requiresClientPlayback: true,
-          },
-          { status: 200 }
-        );
+        // Fast instant response: instruct client to stream via Client-Side YouTube player directly on residential IP
+        return NextResponse.json({
+          success: true,
+          source: "youtube",
+          ytId,
+          requiresClientPlayback: true,
+        });
       }
 
       if (isJsonRequested) {
@@ -413,11 +247,6 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      // Always redirect to the resolved URL.
-      // Proxying audio through a Vercel serverless function causes playback failure because:
-      // 1. Vercel enforces a 4.5MB response body limit — audio files far exceed this.
-      // 2. Vercel function streaming timeouts (10s Hobby / 60s Pro) kill long-lived audio connections.
-      // The browser fetches the audio directly from CDN once redirected.
       return NextResponse.redirect(resolvedUrl, 302);
     }
 

@@ -400,6 +400,15 @@ export async function resolveBestYouTubeAudio(
           return { v, score: -100 };
         }
 
+        // Skip auto-generated Topic channels (e.g. "Artist - Topic") because record labels block third-party iframe embedding (Error 150)
+        if (
+          vAuthor.endsWith("- topic") ||
+          vAuthor.endsWith(" - topic") ||
+          vAuthor.includes("- topic")
+        ) {
+          return { v, score: -100 };
+        }
+
         const vNormTitle = cleanText(vTitle);
         const vNormAuthor = cleanText(vAuthor);
 
@@ -422,7 +431,7 @@ export async function resolveBestYouTubeAudio(
         }
 
         // Official channel boost
-        if (vAuthor.includes("topic") || vAuthor.includes("vevo") || v.author?.verified) {
+        if (vAuthor.includes("vevo") || v.author?.verified || vAuthor.includes("official")) {
           score += 25;
         }
         if (vTitle.includes("official audio") || vTitle.includes("official music video")) {
@@ -641,14 +650,23 @@ export async function searchYouTube(query: string, limit = 25): Promise<GlobalTr
     const res = await yts(query);
     if (!res || !res.videos) return [];
 
-    const tracks = res.videos.slice(0, limit * 2).map((v) => {
+    const tracks: GlobalTrack[] = [];
+    for (const v of res.videos) {
+      if (tracks.length >= limit) break;
+
+      const authorRaw = v.author?.name || "";
+      // Skip auto-generated Topic channels (e.g. "Artist - Topic") because record labels block third-party embedding (Error 150)
+      if (authorRaw.toLowerCase().endsWith("- topic")) {
+        continue;
+      }
+
       const raw = v.title || "Unknown Title";
       const clean = raw
         .replace(/\s*[\(\[](?:Official\s*(?:Music\s*)?Video|Official\s*Audio|Audio|Lyrics?|Visualizer|Lyric\s*Video|HD|4K|Remastered|Video|Clip\s*Officiel)[\)\]]\s*$/gi, "")
         .replace(/\s*[\(\[](?:Official\s*(?:Music\s*)?Video|Official\s*Audio|Audio|Lyrics?|Visualizer|HD|4K|Remastered|Official|Video|Clip\s*Officiel)[\)\]]/gi, "")
         .trim();
 
-      let artistName = (v.author?.name || "YouTube Music")
+      let artistName = authorRaw
         .replace(/\s*-\s*Topic$/i, "")
         .replace(/VEVO$/i, "")
         .replace(/\s*Official$/i, "")
@@ -677,7 +695,7 @@ export async function searchYouTube(query: string, limit = 25): Promise<GlobalTr
       const safeArtistId = `art_${artistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
       const safeAlbumId = `alb_yt_${v.videoId}`;
 
-      return {
+      tracks.push({
         id: `yt_${v.videoId}`,
         title: decodeHtml(title),
         duration: v.seconds || 180,
@@ -694,8 +712,8 @@ export async function searchYouTube(query: string, limit = 25): Promise<GlobalTr
           name: decodeHtml(artistName),
         },
         source: "youtube" as const,
-      };
-    });
+      });
+    }
 
     if (ytSearchCache.size > 200) {
       const firstKey = ytSearchCache.keys().next().value;
