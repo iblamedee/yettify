@@ -846,35 +846,53 @@ export async function searchGlobalMusic(
 
     // Prioritize direct studio CDN tracks (JioSaavn 320kbps & Spotify/Apple 100M+ catalog)
     const combined: GlobalTrack[] = [];
-    const seenSignatures = new Set<string>();
+    const seenStudioSignatures = new Set<string>();
 
     const studioMax = Math.max(saavnTracks.length, spotifyTracks.length);
     for (let i = 0; i < studioMax; i++) {
       if (i < saavnTracks.length) {
         const t = saavnTracks[i];
         const sig = `${t.title.toLowerCase()}:::${t.artist.name.toLowerCase()}`;
-        if (!seenSignatures.has(sig)) {
-          seenSignatures.add(sig);
+        if (!seenStudioSignatures.has(sig)) {
+          seenStudioSignatures.add(sig);
           combined.push(t);
         }
       }
       if (i < spotifyTracks.length) {
         const t = spotifyTracks[i];
         const sig = `${t.title.toLowerCase()}:::${t.artist.name.toLowerCase()}`;
-        if (!seenSignatures.has(sig)) {
-          seenSignatures.add(sig);
+        if (!seenStudioSignatures.has(sig)) {
+          seenStudioSignatures.add(sig);
           combined.push(t);
         }
       }
     }
 
-    // Append YouTube tracks after verified studio tracks to ensure zero-bot streaming for primary search
+    // Append all relevant YouTube tracks (covers, reverb, live, remixes, unreleased) without dropping duplicates
+    const seenYtIds = new Set<string>();
     for (const t of ytTracks) {
-      const sig = `${t.title.toLowerCase()}:::${t.artist.name.toLowerCase()}`;
-      if (!seenSignatures.has(sig)) {
-        seenSignatures.add(sig);
+      if (!seenYtIds.has(t.id)) {
+        seenYtIds.add(t.id);
         combined.push(t);
       }
+    }
+
+    // Intent-aware ranking:
+    // If user's query specifically targets alternate/community versions (e.g. slowed, reverb, cover, remix, live, acoustic):
+    // boost matching YouTube tracks to the top!
+    const lowerQuery = cleanQ.toLowerCase();
+    const isAlternateIntent = ["slowed", "reverb", "cover", "remix", "acoustic", "live", "sped up", "8d", "piano", "tribute"].some(
+      (kw) => lowerQuery.includes(kw)
+    );
+
+    if (isAlternateIntent) {
+      combined.sort((a, b) => {
+        const aTitle = a.title.toLowerCase();
+        const bTitle = b.title.toLowerCase();
+        const aMatches = lowerQuery.split(" ").filter((w) => w.length > 2 && aTitle.includes(w)).length;
+        const bMatches = lowerQuery.split(" ").filter((w) => w.length > 2 && bTitle.includes(w)).length;
+        return bMatches - aMatches;
+      });
     }
 
     return combined.slice(0, limit);

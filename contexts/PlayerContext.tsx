@@ -394,10 +394,21 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // 2. Direct YouTube ID or On-Demand Stream Resolution
+    // 2. Strict 1:1 Client-Side YouTube Playback:
+    // If the track is from YouTube (covers, slowed + reverb, live versions, remixes, or user-selected video),
+    // immediately stream that exact video client-side in the docked mini-player. Never substitute with studio tracks!
     const ytMatch = track.ytId || track.audioUrl?.match(/ytId=([a-zA-Z0-9_-]+)/)?.[1];
     const activeYtId = ytMatch || track.ytId || (track.id.startsWith("yt_") ? track.id.replace(/^yt_/, "") : null);
 
+    if (activeYtId && (track.source === "youtube" || track.id.startsWith("yt_"))) {
+      track.ytId = activeYtId;
+      track.source = "youtube";
+      setPlaybackQuality("HD");
+      initOrLoadYtPlayer(activeYtId);
+      return;
+    }
+
+    // 3. Official Catalog Stream Resolution (e.g. Spotify metadata / search tracks without direct URL)
     const queryUrl = activeYtId
       ? `/api/stream?format=json&ytId=${encodeURIComponent(activeYtId)}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`
       : track.audioUrl?.startsWith("/api/stream")

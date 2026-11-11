@@ -5,6 +5,7 @@ import {
   checkJioSaavnVerified,
   searchJioSaavn,
   stripTrackArtifacts,
+  FORBIDDEN_COVER_KEYWORDS,
 } from "@/lib/musicEngine";
 import { resolveStreamQuality } from "@/lib/audioQuality";
 
@@ -355,7 +356,9 @@ export async function GET(req: NextRequest) {
               }
             }
 
-            if (candidateTitle) {
+            const isAlternateOrCover = FORBIDDEN_COVER_KEYWORDS.some((kw) => candidateTitle.toLowerCase().includes(kw));
+
+            if (candidateTitle && !isAlternateOrCover) {
               const durationNum = parseInt(searchParams.get("duration") || "0", 10);
               const bitrateParam = searchParams.get("bitrate");
               const targetBitrate: "96" | "160" | "320" =

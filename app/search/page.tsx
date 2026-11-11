@@ -277,11 +277,15 @@ function SearchContent() {
                       {tr.resultType === "track" && tr.artist?.name && (
                         <span>• {tr.artist.name}</span>
                       )}
-                      {tr.source && (
-                        <span className="uppercase text-[10px] font-semibold tracking-wider text-spotify-green">
-                          {tr.source}
+                      {tr.source === "youtube" || tr.id?.startsWith("yt_") ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-600/20 text-red-400 font-semibold flex items-center gap-1">
+                          <Youtube size={11} /> YouTube
                         </span>
-                      )}
+                      ) : tr.source === "jiosaavn" || tr.audioUrl?.includes("saavncdn") || tr.id?.startsWith("global_") ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-spotify-green/20 text-spotify-green font-semibold">
+                          Original (320kbps)
+                        </span>
+                      ) : null}
                     </div>
                   </div>
 
@@ -381,13 +385,24 @@ function SearchContent() {
                           </div>
 
                           <div className="flex flex-col overflow-hidden min-w-0">
-                            <span
-                              className={`text-sm font-semibold truncate ${
-                                isTrackCurrent ? "text-spotify-green" : "text-white"
-                              }`}
-                            >
-                              {track.title}
-                            </span>
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <span
+                                className={`text-sm font-semibold truncate ${
+                                  isTrackCurrent ? "text-spotify-green" : "text-white"
+                                }`}
+                              >
+                                {track.title}
+                              </span>
+                              {track.source === "youtube" || track.id.startsWith("yt_") ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-600/20 text-red-400 font-semibold flex items-center gap-1 shrink-0">
+                                  <Youtube size={10} /> YouTube
+                                </span>
+                              ) : track.source === "jiosaavn" || track.audioUrl?.includes("saavncdn") || track.id.startsWith("global_") ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-spotify-green/15 text-spotify-green font-semibold shrink-0">
+                                  Original (320kbps)
+                                </span>
+                              ) : null}
+                            </div>
                             <div className="flex items-center gap-1.5 text-xs text-[#b3b3b3] truncate">
                               <span className="truncate">
                                 {(track.artist?.name || "Various Artists")
@@ -414,16 +429,6 @@ function SearchContent() {
                                     );
                                   })}
                               </span>
-                              {track.id.startsWith("yt_") && (
-                                <span className="text-[10px] px-1 py-0.2 rounded bg-red-600/30 text-red-400 font-semibold shrink-0">
-                                  YouTube
-                                </span>
-                              )}
-                              {track.id.startsWith("itunes_") && (
-                                <span className="text-[10px] px-1 py-0.2 rounded bg-spotify-green/20 text-spotify-green font-semibold shrink-0">
-                                  Spotify
-                                </span>
-                              )}
                             </div>
                           </div>
                         </div>

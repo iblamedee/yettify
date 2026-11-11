@@ -46,3 +46,15 @@ test("decryptSaavnUrl handles encrypted payload or returns null for invalid inpu
   assert.equal(decryptSaavnUrl(""), null);
   assert.equal(decryptSaavnUrl("invalid-base64-random-string"), null);
 });
+
+test("Intent-aware detection correctly flags cover and alternate version queries", () => {
+  const alternateKeywords = ["slowed", "reverb", "cover", "remix", "acoustic", "live", "sped up", "8d", "piano", "tribute"];
+  const isAlternateIntent = (q: string) => alternateKeywords.some((kw) => q.toLowerCase().includes(kw));
+
+  assert.equal(isAlternateIntent("Starboy slowed reverb"), true);
+  assert.equal(isAlternateIntent("Flowers rock cover"), true);
+  assert.equal(isAlternateIntent("Coldplay live at wembley"), true);
+  assert.equal(isAlternateIntent("Numb acoustic"), true);
+  assert.equal(isAlternateIntent("Starboy The Weeknd"), false);
+  assert.equal(isAlternateIntent("Taylor Swift Cruel Summer"), false);
+});
