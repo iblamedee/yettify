@@ -44,6 +44,7 @@ export interface PlayerContextType {
   setIsVideoMode: (val: boolean) => void;
   toggleVideoMode: () => void;
   activeYtVideoId: string | null;
+  setYtPlayerInstance: (player: any) => void;
   currentTime?: number;
   duration?: number;
 }
@@ -202,135 +203,29 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const nextTrackRef = useRef<() => void>(() => {});
 
+  const setYtPlayerInstance = useCallback((player: any) => {
+    ytPlayerRef.current = player;
+  }, []);
+
   const initOrLoadYtPlayer = useCallback(
     (videoId: string) => {
       setActiveEngine("youtube");
       setActiveYtVideoId(videoId);
+      setIsPlaying(true);
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current.src = "";
       }
 
-      const onReady = (player: any) => {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
         try {
-          player.setVolume(isMuted ? 0 : volume * 100);
-          player.playVideo();
-          setIsPlaying(true);
+          ytPlayerRef.current.loadVideoById(videoId);
+          ytPlayerRef.current.setVolume(isMuted ? 0 : volume * 100);
+          ytPlayerRef.current.playVideo();
         } catch {}
-      };
-
-      const onStateChange = (event: any) => {
-        if (event.data === 1) {
-          // Playing
-          setIsPlaying(true);
-          if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
-          if (ytPlayerRef.current?.getDuration) {
-            const d = ytPlayerRef.current.getDuration();
-            if (d > 0) setDuration(d);
-          }
-        } else if (event.data === 2) {
-          // Paused
-          setIsPlaying(false);
-          if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
-        } else if (event.data === 0) {
-          // Ended
-          if (repeatMode === "one") {
-            try {
-              ytPlayerRef.current?.seekTo(0, true);
-              ytPlayerRef.current?.playVideo();
-            } catch {}
-          } else {
-            nextTrackRef.current();
-          }
-        }
-      };
-
-      if (typeof window !== "undefined") {
-        const mountPlayer = (attempts = 0) => {
-          const YT = (window as any).YT;
-          if (!YT || !YT.Player) {
-            if (attempts < 25) {
-              setTimeout(() => mountPlayer(attempts + 1), 200);
-            }
-            return;
-          }
-
-          if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
-            try {
-              ytPlayerRef.current.loadVideoById(videoId);
-              ytPlayerRef.current.setVolume(isMuted ? 0 : volume * 100);
-              ytPlayerRef.current.playVideo();
-              setIsPlaying(true);
-              return;
-            } catch {
-              // Recreate instance if corrupted
-            }
-          }
-
-          const container = document.getElementById("yt-docked-player-frame");
-          if (!container) {
-            if (attempts < 25) {
-              setTimeout(() => mountPlayer(attempts + 1), 100);
-            }
-            return;
-          }
-
-          try {
-            ytPlayerRef.current = new YT.Player("yt-docked-player-frame", {
-              videoId: videoId,
-              playerVars: {
-                autoplay: 1,
-                controls: 0,
-                modestbranding: 1,
-                rel: 0,
-                playsinline: 1,
-                enablejsapi: 1,
-                origin: typeof window !== "undefined" ? window.location.origin : undefined,
-              },
-              events: {
-                onReady: (e: any) => onReady(e.target),
-                onStateChange: onStateChange,
-                onError: (event: any) => {
-                  // If video embedding is disabled by record label (error 101/150), recover via JioSaavn studio audio or embeddable alternate
-                  const trackToRecover = currentTrackRef.current;
-                  if (trackToRecover) {
-                    fetch(
-                      `/api/stream?format=json&title=${encodeURIComponent(trackToRecover.title)}&artist=${encodeURIComponent(trackToRecover.artist?.name || "")}&duration=${trackToRecover.duration || 0}`
-                    )
-                      .then((r) => (r.ok ? r.json() : null))
-                      .then((data) => {
-                        if (data?.audioUrl && data.source === "jiosaavn") {
-                          trackToRecover.audioUrl = data.audioUrl;
-                          playViaDirectAudio(data.audioUrl);
-                          return;
-                        }
-                        if (data?.ytId && data.ytId !== activeYtVideoIdRef.current) {
-                          trackToRecover.ytId = data.ytId;
-                          initOrLoadYtPlayer(data.ytId);
-                          return;
-                        }
-                        showToast("Video restricted by owner. Playing next...", "error");
-                        setTimeout(() => nextTrackRef.current(), 1200);
-                      })
-                      .catch(() => {
-                        nextTrackRef.current();
-                      });
-                    return;
-                  }
-                  showToast("YouTube playback error. Trying next track...", "error");
-                  setTimeout(() => nextTrackRef.current(), 1500);
-                },
-              },
-            });
-          } catch (e) {
-            console.error("Failed to instantiate YouTube player:", e);
-          }
-        };
-
-        mountPlayer();
       }
     },
-    [isMuted, volume, repeatMode, showToast]
+    [isMuted, volume]
   );
 
   // Sync YouTube playback progress when YouTube engine is active
@@ -974,6 +869,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setIsVideoMode,
       toggleVideoMode,
       activeYtVideoId,
+      setYtPlayerInstance,
       currentTime,
       duration,
     }),
@@ -1005,6 +901,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isVideoMode,
       toggleVideoMode,
       activeYtVideoId,
+      setYtPlayerInstance,
     ]
   );
 

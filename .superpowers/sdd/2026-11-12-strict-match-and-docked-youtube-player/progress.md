@@ -7,5 +7,5 @@
 
 ## Task Status
 - Task 1: complete
-- Task 2: in_progress
-- Task 3: pending
+- Task 2: complete
+- Task 3: in_progress

@@ -28,6 +28,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FullScreenPlayerModal } from "./FullScreenPlayerModal";
 import { AudioQualityBadge } from "./AudioQualityBadge";
+import { YouTubePlayer } from "./YouTubePlayer";
 
 export function PlayerBar() {
   const router = useRouter();
@@ -50,12 +51,14 @@ export function PlayerBar() {
     isVideoMode,
     setIsVideoMode,
     toggleVideoMode,
+    activeYtVideoId,
+    setYtPlayerInstance,
   } = usePlayer();
 
   const { currentTime, duration, seekTo } = usePlayerProgress();
 
   const { isTrackLiked, toggleLikeTrack } = useLibrary();
-  const { toggleRightDrawer, rightDrawerView, isRightDrawerOpen } = useUI();
+  const { toggleRightDrawer, rightDrawerView, isRightDrawerOpen, showToast } = useUI();
 
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekVal, setSeekVal] = useState(0);
@@ -79,26 +82,35 @@ export function PlayerBar() {
         onClose={() => setIsFullPlayerOpen(false)}
       />
 
-      {/* Docked YouTube Mini-Player (Persistent DOM node for uninterrupted playback) */}
-      <div
-        id="yt-docked-player-container"
-        className={`fixed z-50 rounded-xl overflow-hidden shadow-2xl transition-all duration-300 border border-white/15 bg-black ${
-          activeEngine === "youtube" && isVideoMode
-            ? "bottom-20 md:bottom-24 right-3 md:right-6 w-64 h-36 md:w-80 md:h-48 opacity-100 pointer-events-auto scale-100"
-            : "bottom-0 right-0 w-1 h-1 opacity-0 pointer-events-none -z-50 scale-75"
-        }`}
-      >
-        <div id="yt-docked-player-frame" className="w-full h-full" />
-        {activeEngine === "youtube" && isVideoMode && (
-          <button
-            onClick={() => setIsVideoMode(false)}
-            className="absolute top-2 right-2 bg-black/80 hover:bg-black text-white p-1 rounded-full backdrop-blur-xs transition-colors z-20 shadow-md"
-            title="Minimize video"
-          >
-            <X size={14} />
-          </button>
-        )}
-      </div>
+      {/* Docked YouTube Mini-Player (Persistent, React-safe & Browser-compliant) */}
+      {activeEngine === "youtube" && activeYtVideoId && (
+        <YouTubePlayer
+          videoId={activeYtVideoId}
+          mode="docked"
+          autoPlay={isPlaying}
+          controls={true}
+          initialVolume={Math.round(volume * 100)}
+          initialMuted={isMuted}
+          title={currentTrack?.title}
+          artist={currentTrack?.artist?.name}
+          onReady={(player) => {
+            setYtPlayerInstance(player);
+          }}
+          onEnded={() => nextTrack()}
+          onError={(err) => {
+            if (err.isRestricted) {
+              showToast("Embedding restricted by copyright owner. Skipping to next...", "error");
+              setTimeout(() => nextTrack(), 1200);
+            } else {
+              showToast("YouTube playback error. Trying next track...", "error");
+              setTimeout(() => nextTrack(), 1500);
+            }
+          }}
+          onClose={() => {
+            setIsVideoMode(false);
+          }}
+        />
+      )}
 
       {/* 1. Mobile Floating Mini-Player (Visible on mobile only, sits above BottomNav) */}
       <div
