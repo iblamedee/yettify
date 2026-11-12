@@ -248,6 +248,16 @@ export function useYouTubePlayer(options: UseYouTubePlayerOptions = {}): UseYouT
     currentVideoIdRef.current = videoId || null;
   }, [videoId]);
 
+  const autoPlayRef = useRef<boolean>(autoPlay);
+  useEffect(() => {
+    autoPlayRef.current = autoPlay;
+  }, [autoPlay]);
+
+  const controlsRef = useRef<boolean>(controls);
+  useEffect(() => {
+    controlsRef.current = controls;
+  }, [controls]);
+
   // Player controls
   const playVideo = useCallback(() => {
     if (playerRef.current && typeof playerRef.current.playVideo === "function") {
@@ -384,7 +394,7 @@ export function useYouTubePlayer(options: UseYouTubePlayerOptions = {}): UseYouT
             const dur = event.target.getDuration() || 0;
             if (dur > 0) setDuration(dur);
 
-            if (autoPlay && currentVideoIdRef.current) {
+            if (autoPlayRef.current && currentVideoIdRef.current) {
               event.target.playVideo();
             }
           } catch {}
@@ -427,19 +437,16 @@ export function useYouTubePlayer(options: UseYouTubePlayerOptions = {}): UseYouT
           callbacksRef.current.onError?.(parsedError);
         };
 
-        // Create the YouTube Player instance
+        // Create the YouTube Player instance (omitting explicit origin avoids Vercel domain verification 150/153 errors)
         playerRef.current = new YT.Player(mountNodeRef.current, {
           videoId: currentVideoIdRef.current || undefined,
           playerVars: {
-            autoplay: autoPlay ? 1 : 0,
-            controls: controls ? 1 : 0,
+            autoplay: autoPlayRef.current ? 1 : 0,
+            controls: controlsRef.current ? 1 : 0,
             playsinline: 1,
             enablejsapi: 1,
             modestbranding: 1,
             rel: 0,
-            origin:
-              origin ||
-              (typeof window !== "undefined" ? window.location.origin : undefined),
           },
           events: {
             onReady: handleReady,
@@ -484,12 +491,58 @@ export function useYouTubePlayer(options: UseYouTubePlayerOptions = {}): UseYouT
       setIsReady(false);
       setIsPlaying(false);
     };
-  }, [autoPlay, controls, initialMuted, initialVolume, origin, startProgressTracking, stopProgressTracking]);
+  }, []);
+
+  // Reactive Play / Pause synchronization without destroying the player
+  useEffect(() => {
+    if (!isReady || !playerRef.current) return;
+    try {
+      if (autoPlay) {
+        if (typeof playerRef.current.playVideo === "function") {
+          playerRef.current.playVideo();
+        }
+      } else {
+        if (typeof playerRef.current.pauseVideo === "function") {
+          playerRef.current.pauseVideo();
+        }
+      }
+    } catch {}
+  }, [autoPlay, isReady]);
+
+  // Reactive Volume synchronization
+  useEffect(() => {
+    if (!isReady || !playerRef.current) return;
+    try {
+      const clamped = Math.max(0, Math.min(100, Math.round(initialVolume)));
+      if (typeof playerRef.current.setVolume === "function") {
+        playerRef.current.setVolume(clamped);
+      }
+    } catch {}
+  }, [initialVolume, isReady]);
+
+  // Reactive Mute synchronization
+  useEffect(() => {
+    if (!isReady || !playerRef.current) return;
+    try {
+      if (initialMuted) {
+        if (typeof playerRef.current.mute === "function") {
+          playerRef.current.mute();
+        }
+      } else {
+        if (typeof playerRef.current.unMute === "function") {
+          playerRef.current.unMute();
+        }
+      }
+    } catch {}
+  }, [initialMuted, isReady]);
 
   // Load new videoId when prop changes on existing player instance
   useEffect(() => {
     if (videoId && isReady && playerRef.current) {
-      loadVideoById(videoId);
+      if (currentVideoIdRef.current !== videoId) {
+        currentVideoIdRef.current = videoId;
+        loadVideoById(videoId);
+      }
     }
   }, [videoId, isReady, loadVideoById]);
 

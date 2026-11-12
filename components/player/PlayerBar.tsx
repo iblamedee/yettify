@@ -53,6 +53,8 @@ export function PlayerBar() {
     toggleVideoMode,
     activeYtVideoId,
     setYtPlayerInstance,
+    userQueue,
+    contextQueue,
   } = usePlayer();
 
   const { currentTime, duration, seekTo } = usePlayerProgress();
@@ -98,12 +100,21 @@ export function PlayerBar() {
           }}
           onEnded={() => nextTrack()}
           onError={(err) => {
+            console.warn("[PlayerBar] YouTube playback error:", err);
             if (err.isRestricted) {
-              showToast("Embedding restricted by copyright owner. Skipping to next...", "error");
-              setTimeout(() => nextTrack(), 1200);
+              if (userQueue.length > 0 || contextQueue.length > 0) {
+                showToast("Embedding restricted by copyright owner. Skipping to next in queue...", "error");
+                setTimeout(() => nextTrack(), 2000);
+              } else {
+                showToast("This video cannot be played in embedded players due to copyright restrictions.", "error");
+              }
             } else {
-              showToast("YouTube playback error. Trying next track...", "error");
-              setTimeout(() => nextTrack(), 1500);
+              if (userQueue.length > 0 || contextQueue.length > 0) {
+                showToast("YouTube playback error. Trying next in queue...", "error");
+                setTimeout(() => nextTrack(), 2000);
+              } else {
+                showToast("YouTube playback error. Please choose another track.", "error");
+              }
             }
           }}
           onClose={() => {

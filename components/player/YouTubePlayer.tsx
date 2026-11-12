@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import {
   useYouTubePlayer,
   YouTubePlayerError,
@@ -46,10 +46,13 @@ export function YouTubePlayer({
   const [isMinimized, setIsMinimized] = useState<boolean>(false);
   const [hasError, setHasError] = useState<YouTubePlayerError | null>(null);
 
-  const handleError = (err: YouTubePlayerError) => {
-    setHasError(err);
-    onError?.(err);
-  };
+  const handleError = useCallback(
+    (err: YouTubePlayerError) => {
+      setHasError(err);
+      onError?.(err);
+    },
+    [onError]
+  );
 
   const {
     containerRef,

@@ -331,6 +331,150 @@ export async function checkJioSaavnVerified(
     }
   }
 
+  // 7. Fallback to resilient mobile Android endpoint (unblocked on cloud datacenters / Vercel)
+  if (candidates.length === 0) {
+    try {
+      const mobileQuery = [cleanTitle, artistName].filter(Boolean).join(" ");
+      const autoUrl = `https://www.jiosaavn.com/api.php?__call=autocomplete.get&_marker=0&query=${encodeURIComponent(mobileQuery)}&ctx=android&_format=json`;
+      const autoRes = await fetch(autoUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+        },
+      });
+
+      if (autoRes.ok) {
+        const autoData = await autoRes.json();
+        const songs = autoData?.songs?.data || [];
+        const songIds = songs.slice(0, 6).map((s: any) => s.id).filter(Boolean);
+
+        if (songIds.length > 0) {
+          const detailsUrl = `https://www.jiosaavn.com/api.php?__call=song.getDetails&cc=in&_marker=0&_format=json&pids=${songIds.join(",")}`;
+          const detailsRes = await fetch(detailsUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+            },
+          });
+
+          if (detailsRes.ok) {
+            const detailsData = await detailsRes.json();
+            for (const id of songIds) {
+              const song = detailsData[id];
+              if (!song) continue;
+
+              const sTitle = song.title || song.song || "";
+              const sAlbum = song.album || song.more_info?.album || "";
+              const primaryArtistObjs = song.more_info?.artistMap?.primary_artists || [];
+              const primaryArtistNames = Array.isArray(primaryArtistObjs) ? primaryArtistObjs.map((a: any) => a.name) : [];
+
+              const artistList = [
+                ...primaryArtistNames,
+                song.primary_artists,
+                song.singers,
+                song.more_info?.music,
+                ...(song.more_info?.artistMap?.artists?.map((a: any) => a.name) || []),
+              ].filter(Boolean);
+              const sArtists = artistList.join(" ");
+
+              const sNormTitle = cleanText(sTitle);
+              const sNormBaseTitle = cleanText(stripTrackArtifacts(sTitle));
+              const sNormArtists = cleanText(sArtists);
+
+              // Forbidden covers, karaoke, and tribute check
+              const fullContent = `${sTitle} ${sAlbum} ${sArtists}`.toLowerCase();
+              const hasCoverKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) => fullContent.includes(kw));
+              const hasCoverArtist = FORBIDDEN_COVER_ARTISTS.some(
+                (ca) => sNormArtists.includes(ca) || sAlbum.toLowerCase().includes(ca)
+              );
+              const requestedHasKeyword = FORBIDDEN_COVER_KEYWORDS.some((kw) =>
+                `${title} ${artistName || ""}`.toLowerCase().includes(kw)
+              );
+              if ((hasCoverKeyword || hasCoverArtist) && !requestedHasKeyword) {
+                continue;
+              }
+
+              // Title matching
+              let titleScore = 0;
+              if (sNormTitle === normTitle || sNormBaseTitle === normBaseTitle) {
+                titleScore = 50;
+              } else if (
+                normBaseTitle.length >= 3 &&
+                (sNormBaseTitle.startsWith(normBaseTitle) || normBaseTitle.startsWith(sNormBaseTitle))
+              ) {
+                titleScore = 35;
+              } else if (normBaseTitle.length >= 4 && sNormBaseTitle.includes(normBaseTitle)) {
+                titleScore = 25;
+              } else {
+                continue;
+              }
+
+              // Length ratio check
+              const lengthRatio = sNormBaseTitle.length / Math.max(1, normBaseTitle.length);
+              if (lengthRatio > 1.4 && !normTitle.includes("remix") && !normTitle.includes("mashup")) {
+                continue;
+              }
+
+              // Strict Artist scoring & validation
+              let artistScore = 0;
+              if (normArtist && normArtist !== "various artists" && normArtist !== "unknown artist") {
+                const primaryNorms = primaryArtistNames.map((n: string) => cleanText(n));
+                const matchedPrimary = primaryNorms.some(
+                  (pn: string) => pn.includes(normArtist) || normArtist.includes(pn)
+                );
+                const matchedAny =
+                  normArtist.length >= 3 &&
+                  (sNormArtists.includes(normArtist) || normArtist.includes(sNormArtists));
+
+                if (matchedPrimary) {
+                  artistScore = 40;
+                } else if (matchedAny) {
+                  artistScore = 25;
+                } else {
+                  continue;
+                }
+              }
+
+              const playCount = parseInt(song.play_count || song.more_info?.play_count || "0", 10);
+              let popScore = 0;
+              if (playCount > 10000000) popScore = 30;
+              else if (playCount > 1000000) popScore = 20;
+              else if (playCount > 100000) popScore = 10;
+
+              const sDuration = parseInt(song.duration || song.more_info?.duration || "0", 10);
+              let durationScore = 0;
+              if (targetDuration && targetDuration > 0 && sDuration > 0) {
+                const diff = Math.abs(sDuration - targetDuration);
+                if (diff <= 15) durationScore = 15;
+                else if (diff <= 40) durationScore = 5;
+                else if (diff > 75) continue;
+              }
+
+              const totalScore = titleScore + artistScore + popScore + durationScore;
+              const encUrl = song.encrypted_media_url || song.more_info?.encrypted_media_url;
+              const audioUrl = decryptSaavnUrl(encUrl, bitrate);
+
+              if (audioUrl) {
+                const rawImg = song.image || "";
+                const coverUrl = rawImg
+                  ? rawImg.replace(/-(?:50x50|150x150)\.(?:jpg|webp)/, "-500x500.jpg")
+                  : undefined;
+                candidates.push({
+                  source: "jiosaavn",
+                  audioUrl,
+                  duration: isNaN(sDuration) ? 210 : sDuration,
+                  coverUrl,
+                  score: totalScore,
+                  playCount,
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("checkJioSaavnVerified mobile fallback error:", err);
+    }
+  }
+
   if (candidates.length === 0) return null;
 
   candidates.sort((a, b) => {
@@ -370,8 +514,9 @@ export async function resolveBestYouTubeAudio(
   }
 
   const queries = [
-    `${artistName || ""} - ${baseTitle} official audio`.trim(),
-    `${artistName || ""} ${baseTitle} audio`.trim(),
+    `${artistName || ""} - ${baseTitle} audio`.trim(),
+    `${artistName || ""} ${baseTitle} lyrics`.trim(),
+    `${artistName || ""} - ${baseTitle}`.trim(),
     `${artistName || ""} - ${title}`.trim(),
   ];
 
@@ -410,6 +555,11 @@ export async function resolveBestYouTubeAudio(
           return { v, score: -100 };
         }
 
+        // Penalize VEVO channels because major labels (UMG/Sony/Warner) block third-party web iframe embedding (Error 150)
+        if (vAuthor.includes("vevo")) {
+          score -= 50;
+        }
+
         const vNormTitle = cleanText(vTitle);
         const vNormAuthor = cleanText(vAuthor);
 
@@ -424,22 +574,23 @@ export async function resolveBestYouTubeAudio(
           const titleMatches = vNormTitle.includes(normArtist);
           if (authorMatches || titleMatches) {
             score += 40;
-            if (authorMatches) score += 20; // Extra boost if author channel itself is the artist
+            if (authorMatches && !vAuthor.includes("vevo")) score += 20; // Extra boost if author channel itself is artist and not VEVO
           } else {
             // Heavy penalty if artist is specified but neither title nor channel contains it
             score -= 60;
           }
         }
 
-        // Official channel boost
-        if (vAuthor.includes("vevo") || v.author?.verified || vAuthor.includes("official")) {
-          score += 25;
-        }
-        if (vTitle.includes("official audio") || vTitle.includes("official music video")) {
+        // Boost verified / official channels that are NOT VEVO (embed-safe)
+        if (!vAuthor.includes("vevo") && (v.author?.verified || vAuthor.includes("official"))) {
           score += 20;
         }
+        // Boost embed-friendly lyric videos and clean audio tracks (which never have Error 150 blocks)
+        if (vTitle.includes("lyrics") || vTitle.includes("lyric video")) {
+          score += 25;
+        }
         if (vTitle.includes("audio")) {
-          score += 10;
+          score += 15;
         }
 
         // Cover penalty
