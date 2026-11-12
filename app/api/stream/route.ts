@@ -152,102 +152,24 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 3. YouTube Audio Streaming with Studio-Master Fallback (Zero 30s cutoffs, zero bot failure)
+    // 3. YouTube Audio Streaming (Preserve exact YouTube video on residential IP with zero latency)
     if (ytId) {
-      let resolvedUrl: string | null = null;
-      let resolvedSource: "youtube" | "jiosaavn" = "youtube";
-
-      const cached = streamCache.get(ytId);
-      if (cached && cached.expires > Date.now()) {
-        resolvedUrl = cached.url;
-        resolvedSource = "jiosaavn";
-      } else {
-        // Fast JioSaavn Studio Master Resolution (~100ms, zero bot risk, full 320kbps CDN audio)
-        try {
-          let candidateTitle = title || "";
-          let candidateArtist = artist || "";
-
-          // Fast zero-bot YouTube oEmbed endpoint if title is missing
-          if (!candidateTitle && ytId) {
-            try {
-              const oembedRes = await fetch(
-                `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${ytId}&format=json`,
-                { signal: AbortSignal.timeout(1200) }
-              );
-              if (oembedRes.ok) {
-                const oData = await oembedRes.json();
-                const rawTitle = oData.title || "";
-                const rawAuthor = (oData.author_name || "")
-                  .replace(/\s*-\s*Topic$/i, "")
-                  .replace(/VEVO$/i, "")
-                  .trim();
-
-                if (rawTitle.includes(" - ")) {
-                  const parts = rawTitle.split(" - ");
-                  candidateArtist = parts[0].trim();
-                  candidateTitle = parts.slice(1).join(" - ").trim();
-                } else {
-                  candidateTitle = rawTitle;
-                  if (!candidateArtist && rawAuthor) {
-                    candidateArtist = rawAuthor;
-                  }
-                }
-              }
-            } catch {}
-          }
-
-          const isAlternateOrCover = FORBIDDEN_COVER_KEYWORDS.some((kw) =>
-            candidateTitle.toLowerCase().includes(kw)
-          );
-
-          if (candidateTitle && !isAlternateOrCover) {
-            const durationNum = parseInt(searchParams.get("duration") || "0", 10);
-            const bitrateParam = searchParams.get("bitrate");
-            const targetBitrate: "96" | "160" | "320" =
-              bitrateParam === "96" || bitrateParam === "160" ? bitrateParam : "320";
-
-            const saavnRes = await checkJioSaavnVerified(
-              candidateTitle,
-              candidateArtist,
-              durationNum > 0 ? durationNum : undefined,
-              targetBitrate
-            );
-
-            if (saavnRes?.audioUrl && saavnRes.audioUrl.startsWith("http")) {
-              resolvedUrl = saavnRes.audioUrl;
-              resolvedSource = "jiosaavn";
-              streamCache.set(ytId, {
-                url: resolvedUrl,
-                expires: Date.now() + 6 * 3600 * 1000,
-              });
-            }
-          }
-        } catch {}
-      }
-
-      if (!resolvedUrl) {
-        // Fast instant response: instruct client to stream via Client-Side YouTube player directly on residential IP
+      if (isJsonRequested) {
         return NextResponse.json({
           success: true,
           source: "youtube",
           ytId,
           requiresClientPlayback: true,
+          qualityTier: "HD",
         });
       }
 
-      if (isJsonRequested) {
-        const qualityInfo = resolveStreamQuality(resolvedUrl, resolvedSource);
-        return NextResponse.json({
-          success: true,
-          audioUrl: resolvedUrl,
-          ytId,
-          source: resolvedSource,
-          bitrate: qualityInfo.bitrate,
-          qualityTier: qualityInfo.tier,
-        });
-      }
-
-      return NextResponse.redirect(resolvedUrl, 302);
+      return NextResponse.json({
+        success: true,
+        source: "youtube",
+        ytId,
+        requiresClientPlayback: true,
+      });
     }
 
     return NextResponse.json(

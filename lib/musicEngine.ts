@@ -269,9 +269,9 @@ export async function checkJioSaavnVerified(
           continue;
         }
 
-        // 4. Artist scoring
+        // 4. Strict Artist scoring & validation
         let artistScore = 0;
-        if (normArtist) {
+        if (normArtist && normArtist !== "various artists" && normArtist !== "unknown artist") {
           const primaryNorms = primaryArtistNames.map((n: string) => cleanText(n));
           const matchedPrimary = primaryNorms.some(
             (pn: string) => pn.includes(normArtist) || normArtist.includes(pn)
@@ -285,7 +285,8 @@ export async function checkJioSaavnVerified(
           } else if (matchedAny) {
             artistScore = 25;
           } else {
-            artistScore = -10;
+            // Strictly reject candidate when artist does not match requested artist!
+            continue;
           }
         }
 
