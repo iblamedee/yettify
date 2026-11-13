@@ -24,6 +24,14 @@ test("parseYouTubeError correctly maps embedding restriction error 150", () => {
   assert.match(err.message, /embedded players/i);
 });
 
+test("parseYouTubeError correctly maps Error 153 as embedder origin configuration error", () => {
+  const err = parseYouTubeError(153, "test_video_153");
+  assert.equal(err.code, 153);
+  assert.equal(err.type, "RESTRICTED");
+  assert.equal(err.isRestricted, true);
+  assert.match(err.message, /embedder/i);
+});
+
 test("parseYouTubeError correctly maps invalid ID error 2", () => {
   const err = parseYouTubeError(2, "bad_id");
   assert.equal(err.code, 2);

@@ -6,7 +6,7 @@ import {
   YouTubePlayerError,
   YouTubePlaybackState,
 } from "@/hooks/useYouTubePlayer";
-import { Minimize2, Maximize2, X, AlertCircle } from "lucide-react";
+import { Minimize2, Maximize2, X, AlertCircle, ExternalLink } from "lucide-react";
 
 export interface YouTubePlayerProps {
   videoId: string | null;
@@ -149,21 +149,31 @@ export function YouTubePlayer({
         className="w-full h-full"
       />
 
-      {/* Error Overlay for Restricted (101/150) or Broken Videos */}
+      {/* Error Overlay for Restricted (101/150/153) or Broken Videos */}
       {hasError && (
         <div
           data-testid="youtube-error-overlay"
-          className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-3 text-center z-30"
+          className="absolute inset-0 bg-black/95 flex flex-col items-center justify-center p-3 text-center z-30 space-y-1.5"
         >
-          <AlertCircle className="w-6 h-6 text-red-400 mb-1" />
+          <AlertCircle className="w-5 h-5 text-amber-400" />
           <p className="text-xs font-semibold text-white">
             {hasError.isRestricted
               ? "Embedding restricted by copyright owner"
-              : "YouTube playback error"}
+              : "Playback Error"}
           </p>
-          <p className="text-[10px] text-gray-400 mt-0.5 line-clamp-2">
+          <p className="text-[10px] text-gray-400 line-clamp-2 max-w-[90%]">
             {hasError.message}
           </p>
+          {videoId && (
+            <a
+              href={`https://www.youtube.com/watch?v=${videoId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] font-medium bg-spotify-green hover:bg-spotify-green-highlight text-black px-3 py-1 rounded-full transition-transform active:scale-95 inline-flex items-center gap-1 mt-1"
+            >
+              Listen on YouTube <ExternalLink size={10} />
+            </a>
+          )}
         </div>
       )}
     </div>

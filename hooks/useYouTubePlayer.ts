@@ -167,6 +167,11 @@ export function parseYouTubeError(code: number, videoId: string): YouTubePlayerE
       message = "The owner or record label does not allow this video to be played in embedded players.";
       isRestricted = true;
       break;
+    case 153:
+      type = "RESTRICTED";
+      message = "Embedder identity or domain verification restricted by YouTube (Error 153).";
+      isRestricted = true;
+      break;
   }
 
   return { code, type, message, isRestricted, videoId };
@@ -437,8 +442,9 @@ export function useYouTubePlayer(options: UseYouTubePlayerOptions = {}): UseYouT
           callbacksRef.current.onError?.(parsedError);
         };
 
-        // Create the YouTube Player instance (omitting explicit origin avoids Vercel domain verification 150/153 errors)
+        // Create the YouTube Player instance with hardened privacy-enhanced host and explicit origin verification
         playerRef.current = new YT.Player(mountNodeRef.current, {
+          host: "https://www.youtube-nocookie.com",
           videoId: currentVideoIdRef.current || undefined,
           playerVars: {
             autoplay: autoPlayRef.current ? 1 : 0,
@@ -447,6 +453,7 @@ export function useYouTubePlayer(options: UseYouTubePlayerOptions = {}): UseYouT
             enablejsapi: 1,
             modestbranding: 1,
             rel: 0,
+            origin: typeof window !== "undefined" ? window.location.origin : undefined,
           },
           events: {
             onReady: handleReady,
