@@ -496,6 +496,25 @@ export async function checkJioSaavnVerified(
 }
 
 /**
+ * Detects whether a YouTube channel enforces third-party web embedding blocks (Error 150/101).
+ * Major labels enforce blanket embed restrictions on all VEVO and auto-generated Topic channels.
+ */
+export function isChannelEmbedRestricted(channelName: string, channelUrl?: string): boolean {
+  const norm = (channelName || "").toLowerCase().trim();
+  const normUrl = (channelUrl || "").toLowerCase().trim();
+  if (norm.includes("vevo") || normUrl.includes("vevo")) return true;
+  if (
+    norm.endsWith("- topic") ||
+    norm.endsWith("-topic") ||
+    norm.includes("- topic") ||
+    normUrl.includes("-topic")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Searches and ranks YouTube audio videos with multi-criteria scoring to guarantee the exact official track
  */
 export async function resolveBestYouTubeAudio(
@@ -514,8 +533,8 @@ export async function resolveBestYouTubeAudio(
   }
 
   const queries = [
-    `${artistName || ""} - ${baseTitle} audio`.trim(),
     `${artistName || ""} ${baseTitle} lyrics`.trim(),
+    `${artistName || ""} - ${baseTitle} audio`.trim(),
     `${artistName || ""} - ${baseTitle}`.trim(),
     `${artistName || ""} - ${title}`.trim(),
   ];
@@ -529,6 +548,7 @@ export async function resolveBestYouTubeAudio(
       const scored = res.videos.map((v: any) => {
         const vTitle = (v.title || "").toLowerCase();
         const vAuthor = (v.author?.name || "").toLowerCase();
+        const vAuthorUrl = (v.author?.url || "").toLowerCase();
         const durationSec = v.seconds || 0;
         let score = 0;
 
@@ -546,18 +566,9 @@ export async function resolveBestYouTubeAudio(
           return { v, score: -100 };
         }
 
-        // Skip auto-generated Topic channels (e.g. "Artist - Topic") because record labels block third-party iframe embedding (Error 150)
-        if (
-          vAuthor.endsWith("- topic") ||
-          vAuthor.endsWith(" - topic") ||
-          vAuthor.includes("- topic")
-        ) {
+        // Embed Safety: Completely discard VEVO and Topic channels because record labels block third-party iframe embedding (Error 150/101)
+        if (isChannelEmbedRestricted(vAuthor, vAuthorUrl)) {
           return { v, score: -100 };
-        }
-
-        // Penalize VEVO channels because major labels (UMG/Sony/Warner) block third-party web iframe embedding (Error 150)
-        if (vAuthor.includes("vevo")) {
-          score -= 50;
         }
 
         const vNormTitle = cleanText(vTitle);
@@ -574,23 +585,34 @@ export async function resolveBestYouTubeAudio(
           const titleMatches = vNormTitle.includes(normArtist);
           if (authorMatches || titleMatches) {
             score += 40;
-            if (authorMatches && !vAuthor.includes("vevo")) score += 20; // Extra boost if author channel itself is artist and not VEVO
+            if (authorMatches) score += 20; // Extra boost if author channel itself is artist
           } else {
             // Heavy penalty if artist is specified but neither title nor channel contains it
             score -= 60;
           }
         }
 
-        // Boost verified / official channels that are NOT VEVO (embed-safe)
-        if (!vAuthor.includes("vevo") && (v.author?.verified || vAuthor.includes("official"))) {
+        // Boost verified / official channels (embed-safe)
+        if (v.author?.verified || vAuthor.includes("official")) {
           score += 20;
         }
         // Boost embed-friendly lyric videos and clean audio tracks (which never have Error 150 blocks)
         if (vTitle.includes("lyrics") || vTitle.includes("lyric video")) {
-          score += 25;
+          score += 35;
         }
         if (vTitle.includes("audio")) {
-          score += 15;
+          score += 20;
+        }
+
+        // Reliability boost for established embed-compliant lyric channels
+        const cleanLyricChannels = ["7clouds", "dan music", "shadow music", "taj tracks", "cassiopeia", "unique vibes", "tbt lyrics", "superblyrics", "syrebralvibes"];
+        if (cleanLyricChannels.some((c) => vAuthor.includes(c))) {
+          score += 40;
+        }
+
+        // De-prioritize official music videos (they have movie intros/skits and frequent embedding blocks)
+        if (vTitle.includes("official music video") || vTitle.includes("official video")) {
+          score -= 30;
         }
 
         // Cover penalty

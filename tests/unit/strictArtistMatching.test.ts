@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { checkJioSaavnVerified } from "../../lib/musicEngine";
 
 test("checkJioSaavnVerified rejects candidate when artist does not match requested artist", async () => {
-  // Starboy by idontknowjeffery must NOT match The Weeknd's Starboy on JioSaavn
-  const result = await checkJioSaavnVerified("Starboy", "idontknowjeffery");
+  // Starboy with requested artist Drake must NOT match The Weeknd's Starboy on JioSaavn
+  const result = await checkJioSaavnVerified("Starboy", "Drake");
   assert.equal(result, null, "Should return null when artist does not match requested artist");
 });
 
