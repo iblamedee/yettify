@@ -65,7 +65,7 @@ export function decryptSaavnUrl(encUrl: string, bitrate: "96" | "160" | "320" = 
       decrypted += decipher.final("utf-8");
       const rawUrl = decrypted.trim();
       if (rawUrl && rawUrl.startsWith("http")) {
-        return rawUrl.replace(/_96\./, `_${bitrate}.`);
+        return rawUrl.replace(/_(?:96|160)\./, `_${bitrate}.`);
       }
     }
   } catch {
@@ -83,7 +83,7 @@ export function decryptSaavnUrl(encUrl: string, bitrate: "96" | "160" | "320" = 
     );
     const rawUrl = decrypted.toString(CryptoJS.enc.Utf8).trim();
     if (!rawUrl || !rawUrl.startsWith("http")) return null;
-    return rawUrl.replace(/_96\./, `_${bitrate}.`);
+    return rawUrl.replace(/_(?:96|160)\./, `_${bitrate}.`);
   } catch {
     return null;
   }
@@ -357,8 +357,15 @@ export async function checkJioSaavnVerified(
 
           if (detailsRes.ok) {
             const detailsData = await detailsRes.json();
-            for (const id of songIds) {
-              const song = detailsData[id];
+            const songList: any[] = Array.isArray(detailsData?.songs)
+              ? detailsData.songs
+              : Array.isArray(detailsData)
+              ? detailsData
+              : typeof detailsData === "object" && detailsData !== null
+              ? Object.values(detailsData).filter((v: any) => v && typeof v === "object" && (v.id || v.song || v.title))
+              : [];
+
+            for (const song of songList) {
               if (!song) continue;
 
               const sTitle = song.title || song.song || "";

@@ -58,3 +58,11 @@ test("Intent-aware detection correctly flags cover and alternate version queries
   assert.equal(isAlternateIntent("Starboy The Weeknd"), false);
   assert.equal(isAlternateIntent("Taylor Swift Cruel Summer"), false);
 });
+
+test("checkJioSaavnVerified produces 320kbps CDN URL for catalog hits without cloud IP blocks", async () => {
+  const { checkJioSaavnVerified } = await import("../../lib/musicEngine");
+  const res = await checkJioSaavnVerified("Starboy", "The Weeknd", 230, "320");
+  assert.ok(res !== null, "Must resolve a candidate");
+  assert.equal(res?.source, "jiosaavn");
+  assert.match(res!.audioUrl, /^https:\/\/aac\.saavncdn\.com\/.*_320\.mp4$/);
+});
