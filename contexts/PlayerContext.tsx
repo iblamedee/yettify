@@ -8,6 +8,9 @@ import { useUI } from "@/contexts/UIContext";
 
 export type RepeatMode = "off" | "all" | "one";
 
+export const SILENT_AUDIO_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
 export interface PlayerProgressContextType {
   currentTime: number;
   duration: number;
@@ -265,9 +268,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setIsPlaying(true);
         if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
       })
-      .catch(() => {
-        // Autoplay may wait for user interaction or buffer readiness
-        setIsPlaying(true);
+      .catch((err) => {
+        console.warn("[PlayerContext] Direct audio play rejected by browser autoplay policy:", err);
+        setIsPlaying(false);
+        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+        showToast("Tap Play to resume audio playback.", "info");
       });
   };
 
@@ -340,6 +345,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       : track.audioUrl?.startsWith("/api/stream")
       ? `${track.audioUrl}${track.audioUrl.includes("?") ? "&" : "?"}format=json&bitrate=${prefBitrate}`
       : `/api/stream?format=json&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist?.name || "")}&duration=${track.duration || 0}&bitrate=${prefBitrate}`;
+
+    // Synchronous Audio Priming: Unlocks HTML5 audio element within the user interaction turn
+    // before the asynchronous fetch to prevent Safari/iOS from rejecting playback with NotAllowedError
+    if (audioRef.current && !activeYtId) {
+      try {
+        audioRef.current.src = SILENT_AUDIO_WAV;
+        audioRef.current.play().catch(() => {});
+      } catch {}
+    }
 
     setIsPlaying(true);
 
